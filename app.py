@@ -1,5 +1,6 @@
 import sys
 import os
+import sqlite3
 import tkinter as tk
 from tkinter import messagebox
 from datetime import datetime
@@ -13,7 +14,17 @@ def get_app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def save_submission(text):
+def init_db(db_path):
+    con = sqlite3.connect(db_path)
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS submissions "
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, entry TEXT)"
+    )
+    con.commit()
+    return con
+
+
+def save_submission(text, db_con):
     app_dir = get_app_dir()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -35,16 +46,23 @@ def save_submission(text):
 
     ws.append([timestamp, text])
 
-    # Write to a temp file first so a crash mid-write can't corrupt the xlsx.
     tmp_path = xlsx_path + ".tmp"
     wb.save(tmp_path)
     os.replace(tmp_path, xlsx_path)
+
+    # --- submissions.db ---
+    db_con.execute(
+        "INSERT INTO submissions (timestamp, entry) VALUES (?, ?)", (timestamp, text)
+    )
+    db_con.commit()
 
 
 class SubmissionApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Submission App")
+        db_path = os.path.join(get_app_dir(), "submissions.db")
+        self.db_con = init_db(db_path)
         self.resizable(False, False)
 
         tk.Label(self, text="Enter text:", font=("Helvetica", 12)).pack(
@@ -73,7 +91,7 @@ class SubmissionApp(tk.Tk):
             self.status_label.config(text="Nothing to save — text box is empty.", fg="red")
             return
         try:
-            save_submission(text)
+            save_submission(text, self.db_con)
             self.text_box.delete("1.0", tk.END)
             self.status_label.config(text="Saved!", fg="green")
         except Exception as exc:
