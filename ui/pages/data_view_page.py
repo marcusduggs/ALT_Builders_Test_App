@@ -32,7 +32,23 @@ status.json, so it's built once.
 
 "Export to Excel" (top right of the header) writes all three tabs -- the
 same cached Increment every tab renders from -- to one .xlsx via
-core.excel_export.
+core.excel_export. Respects whichever version is currently selected
+(see below), since it always exports self.increment, not "the latest".
+
+Version selector (next to the title): a dropdown of every stored
+version ("v3 (2026-07-06)", newest first), defaulting to the latest.
+Switching versions re-parses THAT version's file in the background
+(same run_with_progress spinner pattern as the initial load -- this is
+real, multi-second openpyxl parsing, not a cheap cache lookup) and
+replaces self.increment wholesale, which is why All Data/Sum Data/
+Report are each built inside their own container+layout (mirroring the
+Sum Data tab's existing rebuild-in-place pattern) rather than built
+once in __init__ like before. Status marks are NOT tracked historically
+per version -- they always come from the current status.json (see
+ui.mock_data.MockDataStore.get_increment_for_display) -- so viewing
+anything other than the latest version shows a persistent warning
+banner clarifying that status reflects today's progress, not a
+historical snapshot.
 """
 
 from __future__ import annotations
@@ -40,6 +56,7 @@ from __future__ import annotations
 from PySide6.QtCore import QModelIndex, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -158,25 +175,36 @@ class DataViewPage(QWidget):
         self.increment = increment
         self.store = store
         self.on_back = on_back
+        self.latest_version = increment.version  # refined by _populate_version_combo below
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 20, 20, 20)
         outer.setSpacing(12)
 
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_all_data_tab(), "All Data")
+        outer.addWidget(self._build_header())
+        outer.addWidget(self._build_version_notice())
+
+        self.all_data_container = QWidget()
+        self.all_data_layout = QVBoxLayout(self.all_data_container)
+        self.all_data_layout.setContentsMargins(0, 0, 0, 0)
+        self._refresh_all_data_tab()
 
         self.sum_data_container = QWidget()
         self.sum_data_layout = QVBoxLayout(self.sum_data_container)
         self.sum_data_layout.setContentsMargins(0, 0, 0, 0)
         self._refresh_sum_data_tab()
+
+        self.report_container = QWidget()
+        self.report_layout = QVBoxLayout(self.report_container)
+        self.report_layout.setContentsMargins(0, 0, 0, 0)
+        self._refresh_report_tab()
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.all_data_container, "All Data")
         self.tabs.addTab(self.sum_data_container, "Sum Data")
-
-        self.tabs.addTab(self._build_report_tab(), "Report")
-
+        self.tabs.addTab(self.report_container, "Report")
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
-        outer.addWidget(self._build_header())
         outer.addWidget(self.tabs, stretch=1)
         outer.addWidget(self._build_footer())
 
@@ -190,7 +218,7 @@ class DataViewPage(QWidget):
             self._refresh_sum_data_tab()
 
     # ------------------------------------------------------------------
-    # header + export
+    # header + version selector + export
     # ------------------------------------------------------------------
     def _build_header(self) -> QWidget:
         row = QWidget()
@@ -200,16 +228,22 @@ class DataViewPage(QWidget):
         back_button = QPushButton("< Back to Increments")
         back_button.clicked.connect(lambda: self.on_back())
 
-        title = QLabel(f"{self.increment.name} — Version {self.increment.version}")
-        title.setObjectName("pageTitle")
+        self.title_label = QLabel(f"{self.increment.name} — Version {self.increment.version}")
+        self.title_label.setObjectName("pageTitle")
 
-        subtitle = QLabel(f"{self.project_name}  ·  Last updated {self.increment.last_updated}")
-        subtitle.setObjectName("hint")
+        self.subtitle_label = QLabel(f"{self.project_name}  ·  Last updated {self.increment.last_updated}")
+        self.subtitle_label.setObjectName("hint")
 
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
-        title_box.addWidget(title)
-        title_box.addWidget(subtitle)
+        title_box.addWidget(self.title_label)
+        title_box.addWidget(self.subtitle_label)
+
+        version_label = QLabel("Version:")
+        self.version_combo = QComboBox()
+        self.version_combo.setMinimumWidth(150)
+        self._populate_version_combo()
+        self.version_combo.currentIndexChanged.connect(self._on_version_changed)
 
         export_button = QPushButton("Export to Excel")
         export_button.clicked.connect(self._on_export_clicked)
@@ -217,9 +251,109 @@ class DataViewPage(QWidget):
         layout.addWidget(back_button)
         layout.addSpacing(16)
         layout.addLayout(title_box)
+        layout.addSpacing(16)
+        layout.addWidget(version_label)
+        layout.addWidget(self.version_combo)
         layout.addStretch(1)
         layout.addWidget(export_button)
         return row
+
+    def _populate_version_combo(self):
+        """Every stored version of this increment, newest first (see
+        core.project_store.list_versions) -- fetched once here, not
+        re-fetched on every switch, since the set of stored versions
+        doesn't change while this page is open.
+        """
+        version_records = self.store.list_versions(self.project_name, self.increment.name)
+        self.latest_version = version_records[0].version if version_records else self.increment.version
+
+        self.version_combo.blockSignals(True)
+        self.version_combo.clear()
+        for v in version_records:
+            self.version_combo.addItem(f"v{v.version} ({v.uploaded_date})", userData=v.version)
+        self._select_version_in_combo(self.increment.version)
+        self.version_combo.blockSignals(False)
+
+    def _select_version_in_combo(self, version: int):
+        idx = self.version_combo.findData(version)
+        if idx >= 0:
+            self.version_combo.setCurrentIndex(idx)
+
+    def _on_version_changed(self, index: int):
+        if index < 0:
+            return
+        selected_version = self.version_combo.itemData(index)
+        if selected_version == self.increment.version:
+            return  # no real change -- combo was just re-synced programmatically
+
+        def on_finished(new_increment):
+            if new_increment is None:
+                QMessageBox.critical(
+                    self, "Could Not Load Version", f"Version {selected_version} could not be found."
+                )
+                self._revert_version_combo()
+                return
+            self._apply_new_increment(new_increment)
+
+        def on_error(exc):
+            QMessageBox.critical(self, "Could Not Load Version", f"This version couldn't be read:\n\n{exc}")
+            self._revert_version_combo()
+
+        run_with_progress(
+            self, f"Loading version {selected_version}...", self.store.get_increment_for_display,
+            on_finished, on_error, self.project_name, self.increment.name, selected_version,
+        )
+
+    def _revert_version_combo(self):
+        """On a failed version load, the combo's selection has already
+        visually moved to the version that FAILED to load -- snap it
+        back to whatever's actually displayed so the dropdown never
+        shows a version that isn't the one on screen.
+        """
+        self.version_combo.blockSignals(True)
+        self._select_version_in_combo(self.increment.version)
+        self.version_combo.blockSignals(False)
+
+    def _apply_new_increment(self, new_increment: Increment):
+        self.increment = new_increment
+        self._refresh_all_data_tab()
+        self._refresh_sum_data_tab()
+        self._refresh_report_tab()
+        self._refresh_footer()
+        self.title_label.setText(f"{self.increment.name} — Version {self.increment.version}")
+        self.subtitle_label.setText(f"{self.project_name}  ·  Last updated {self.increment.last_updated}")
+        self._update_version_notice()
+
+    def _build_version_notice(self) -> QFrame:
+        """Hidden whenever the LATEST version is displayed; shown with a
+        clear explanation otherwise -- status marks are never tracked
+        historically per version (see ui.mock_data.MockDataStore.
+        get_increment_for_display), so an older version's Done/Open marks
+        are today's live progress overlaid on that version's data, not a
+        preserved historical snapshot. Reuses the same warning styling
+        core/../review_dialog.py's Column Anomalies section uses, for a
+        consistent "pay attention" visual language across the app.
+        """
+        frame = QFrame()
+        frame.setObjectName("changeSectionWarning")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(12, 8, 12, 8)
+        self.version_notice_label = QLabel()
+        self.version_notice_label.setObjectName("changeSectionTitleWarning")
+        self.version_notice_label.setWordWrap(True)
+        layout.addWidget(self.version_notice_label)
+        self.version_notice_frame = frame
+        self._update_version_notice()
+        return frame
+
+    def _update_version_notice(self):
+        is_latest = self.increment.version == self.latest_version
+        self.version_notice_frame.setVisible(not is_latest)
+        if not is_latest:
+            self.version_notice_label.setText(
+                f"Viewing v{self.increment.version} ({self.increment.last_updated}) — status marks reflect "
+                "current progress, not historical status."
+            )
 
     def _on_export_clicked(self):
         default_name = excel_export.default_filename(self.project_name, self.increment.name, self.increment.version)
@@ -233,6 +367,12 @@ class DataViewPage(QWidget):
         def on_error(exc):
             QMessageBox.critical(self, "Could Not Export", f"This file couldn't be saved:\n\n{exc}")
 
+        # Exports whatever self.increment currently holds -- the
+        # currently SELECTED version, not necessarily the latest (see
+        # _apply_new_increment) -- and default_filename() already bakes
+        # self.increment.version into the filename, so an export made
+        # while viewing an older version is never silently mistaken for
+        # the latest one.
         run_with_progress(
             self, "Exporting to Excel...", excel_export.export_increment,
             on_finished, on_error, self.increment, path,
@@ -241,6 +381,13 @@ class DataViewPage(QWidget):
     # ------------------------------------------------------------------
     # All Data tab
     # ------------------------------------------------------------------
+    def _refresh_all_data_tab(self):
+        while self.all_data_layout.count():
+            child = self.all_data_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.all_data_layout.addWidget(self._build_all_data_tab())
+
     def _build_all_data_tab(self) -> FrozenTableView:
         headers = ["Index", "Description", "Approval Agency"]
         headers += [f"Stage {i}" for i in range(1, STAGE_COUNT + 1)]
@@ -446,6 +593,13 @@ class DataViewPage(QWidget):
     # ------------------------------------------------------------------
     # Report tab
     # ------------------------------------------------------------------
+    def _refresh_report_tab(self):
+        while self.report_layout.count():
+            child = self.report_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.report_layout.addWidget(self._build_report_tab())
+
     def _build_report_tab(self) -> QTableWidget:
         headers = ["Approval Agency", "Index", "Description", "Total"]
         rows = self.increment.report

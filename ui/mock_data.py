@@ -23,7 +23,7 @@ import pandas as pd
 
 from core import excel_reader, increment_matcher, status_tracker, structure_diff, value_diff
 from core.increment_matcher import MatchResult
-from core.project_store import ProjectStore
+from core.project_store import ProjectStore, VersionRecord
 
 STAGE_COUNT = excel_reader.STAGE_COUNT
 
@@ -217,6 +217,9 @@ class MockDataStore:
     def delete_project(self, name: str) -> None:
         self.store.delete_project(name)
 
+    def delete_increment(self, project_name: str, increment_name: str) -> None:
+        self.store.delete_increment(project_name, increment_name)
+
     # ------------------------------------------------------------------
     # increment upload / review flow
     # ------------------------------------------------------------------
@@ -395,28 +398,43 @@ class MockDataStore:
     # ------------------------------------------------------------------
     # data view
     # ------------------------------------------------------------------
-    def get_increment_for_display(self, project_name: str, increment_name: str) -> Increment | None:
-        """Loads the CURRENT version's file fresh off disk and parses it
-        ONCE via core.excel_reader.normalize_workbook() -- which computes
-        All Data, Sum Data, and Report together in the same pass -- and
-        returns all three on the one Increment. This is the single
-        background load ui/main_window.py's show_data_view() already
-        runs via ui.workers.run_with_progress; ui/pages/data_view_page.py
-        switches between its All Data/Sum Data/Report tabs by
-        re-rendering from this one cached Increment, never by calling
-        back into this method again, so a tab switch never triggers
-        another parse or progress dialog.
+    def list_versions(self, project_name: str, increment_name: str) -> list[VersionRecord]:
+        return self.store.list_versions(project_name, increment_name)
 
-        "recently_added" rows are computed by diffing the current version
-        against the immediately preceding one (nothing to diff for
-        version 1, so nothing is flagged added on a first upload). Each
-        All Data row's "required_stages" (which of the 42 stage columns
-        actually apply to this item) and "stage_status" (status.json's
-        marks, restricted to stages that are still required) drive the
-        interactive per-stage cells in ui/pages/data_view_page.py;
-        "needs_status_stages" is simply "required stages with no entry in
-        stage_status". See _sum_data_rows() for how the Sum Data rows
-        relate to these.
+    def get_increment_for_display(
+        self, project_name: str, increment_name: str, version: int | None = None
+    ) -> Increment | None:
+        """Loads ONE version's file fresh off disk and parses it ONCE via
+        core.excel_reader.normalize_workbook() -- which computes All
+        Data, Sum Data, and Report together in the same pass -- and
+        returns all three on the one Increment. Defaults to the CURRENT
+        (latest) version when `version` is omitted -- the single
+        background load ui/main_window.py's show_data_view() runs via
+        ui.workers.run_with_progress when the Data View first opens.
+        ui/pages/data_view_page.py's version-selector dropdown calls this
+        again with an explicit `version` on each switch (also via
+        run_with_progress -- this is real, multi-second parsing, not a
+        cheap cache lookup); switching between the All Data/Sum Data/
+        Report TABS of the SAME version never calls back into this
+        method, only re-renders from the Increment already in memory.
+
+        Status marks (stage_status) always come from the CURRENT
+        status.json regardless of which version is being displayed --
+        status isn't tracked historically per version, so viewing an
+        older version shows today's Done/Open progress overlaid on that
+        version's data, not a historical snapshot of status. Callers
+        showing a non-latest version should make that distinction
+        visible (see ui/pages/data_view_page.py's version notice).
+
+        "recently_added"/"value_changed" rows are computed by diffing the
+        DISPLAYED version against the one immediately before it (nothing
+        to diff for version 1). Each All Data row's "required_stages"
+        (which of the 42 stage columns actually apply to this item) and
+        "stage_status" (status.json's marks, restricted to stages that
+        are still required) drive the interactive per-stage cells in
+        ui/pages/data_view_page.py; "needs_status_stages" is simply
+        "required stages with no entry in stage_status". See
+        _sum_data_rows() for how the Sum Data rows relate to these.
 
         This does real openpyxl parsing (multi-second for a real file) --
         callers on the UI thread should run it via ui.workers.run_with_progress.
@@ -424,22 +442,25 @@ class MockDataStore:
         record = self.store.get_increment(project_name, increment_name)
         if record is None:
             return None
-        current_path = self.store.current_version_path(project_name, increment_name)
-        wb_current = excel_reader.open_workbook(str(current_path))
-        parsed = excel_reader.normalize_workbook(wb_current)
+        selected_version = version if version is not None else record.version
+        selected_path = self.store.version_path(project_name, increment_name, selected_version)
+        if selected_path is None:
+            return None
+        wb_selected = excel_reader.open_workbook(str(selected_path))
+        parsed = excel_reader.normalize_workbook(wb_selected)
         all_data_df = parsed["all_data"]
         status_map = self.store.load_status(project_name, increment_name)
         required_stages_by_index = excel_reader.required_stages_by_index(all_data_df)
 
         recently_added: set[str] = set()
         value_changed: set[str] = set()
-        if record.version > 1:
-            previous_path = self.store.version_path(project_name, increment_name, record.version - 1)
+        if selected_version > 1:
+            previous_path = self.store.version_path(project_name, increment_name, selected_version - 1)
             if previous_path is not None:
-                sheet_diffs = structure_diff.compare_structure(str(previous_path), wb_current)
+                sheet_diffs = structure_diff.compare_structure(str(previous_path), wb_selected)
                 for diff in sheet_diffs.values():
                     recently_added.update(diff.added_indexes)
-                value_changed.update(value_diff.compare_values(str(previous_path), wb_current).keys())
+                value_changed.update(value_diff.compare_values(str(previous_path), wb_selected).keys())
 
         rows = []
         for _, row in all_data_df.iterrows():
@@ -478,10 +499,16 @@ class MockDataStore:
             for _, row in parsed["report"].iterrows()
         ]
 
+        # last_updated for the DISPLAYED version specifically -- record.last_updated
+        # is only ever the latest version's date, which is wrong once
+        # `version` selects something older.
+        version_dates = {v.version: v.uploaded_date for v in self.store.list_versions(project_name, increment_name)}
+        last_updated = version_dates.get(selected_version, record.last_updated)
+
         return Increment(
             name=record.name,
-            version=record.version,
-            last_updated=record.last_updated,
+            version=selected_version,
+            last_updated=last_updated,
             all_data=rows,
             sum_data=sum_data_rows,
             report=report_rows,

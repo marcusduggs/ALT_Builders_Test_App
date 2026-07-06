@@ -95,6 +95,12 @@ class IncrementRecord:
     slug: str
 
 
+@dataclass
+class VersionRecord:
+    version: int
+    uploaded_date: str
+
+
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
     return slug or "untitled"
@@ -304,6 +310,34 @@ class ProjectStore:
         self._copy_version_file(project.slug, increment.slug, source_file_path, version=new_version, as_of=today)
         return IncrementRecord(name=increment_name, version=new_version, last_updated=today, slug=increment.slug)
 
+    def delete_increment(self, project_name: str, increment_name: str) -> None:
+        """Soft-delete: moves the increment's whole folder -- every
+        version file and status.json, untouched -- out of
+        projects/{project}/increments/ into <base_dir>/_deleted/,
+        exactly the same pattern as delete_project() (timestamp-prefixed
+        so repeated deletions of similarly-named increments never
+        collide; nothing merged, nothing overwritten). The project
+        itself and its other increments are untouched -- only this one
+        increment's folder moves.
+
+        Prefixed with the project's slug as well as the increment's
+        (not just the increment's) since increment slugs are only
+        unique within a project -- two different projects could each
+        have an "inc-1", and _deleted/ is a single flat folder shared
+        across every project, not one per project.
+        """
+        project = self.get_project(project_name)
+        if project is None:
+            return
+        increment = self.get_increment(project_name, increment_name)
+        if increment is None:
+            return
+        deleted_dir = self.base_dir / DELETED_DIRNAME
+        deleted_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        dest_name = _unique_dir_name(deleted_dir, f"{timestamp}_{project.slug}_{increment.slug}")
+        shutil.move(str(self._increments_dir(project.slug) / increment.slug), str(deleted_dir / dest_name))
+
     def _files_dir(self, project_slug: str, increment_slug: str) -> Path:
         return self._increments_dir(project_slug) / increment_slug / "files"
 
@@ -342,6 +376,22 @@ class ProjectStore:
             if f.name.startswith(f"v{version}_"):
                 return f
         return None
+
+    def list_versions(self, project_name: str, increment_name: str) -> list[VersionRecord]:
+        """Every stored version of this increment, NEWEST first (the
+        reverse of list_version_files(), which is oldest-first for
+        version-history bookkeeping) -- for a UI version-selector
+        dropdown, which should default to the top entry. Parsed
+        straight from each stored file's "vN_YYYY-MM-DD.ext" name (see
+        _copy_version_file), not from increment.json, since that only
+        ever holds the CURRENT version's date.
+        """
+        records = []
+        for f in self.list_version_files(project_name, increment_name):
+            match = re.match(r"v(\d+)_(\d{4}-\d{2}-\d{2})", f.name)
+            if match:
+                records.append(VersionRecord(version=int(match.group(1)), uploaded_date=match.group(2)))
+        return list(reversed(records))
 
     # ------------------------------------------------------------------
     # status

@@ -221,11 +221,28 @@ class HomePage(QWidget):
             view_button.setObjectName("primaryButton")
             view_button.clicked.connect(partial(self.on_view_data, project_name, increment.name))
 
+            delete_button = QPushButton("Delete")
+            delete_button.setObjectName("dangerButton")
+            delete_button.clicked.connect(partial(self._on_delete_increment, project_name, increment.name))
+
             actions_layout.addWidget(view_button)
+            actions_layout.addWidget(delete_button)
             self.increment_table.setCellWidget(row, 3, actions)
 
         self.increment_table.setVisible(bool(increments))
         self.empty_state_label.setVisible(not increments)
+
+    def _on_delete_increment(self, project_name: str, increment_name: str):
+        answer = QMessageBox.question(
+            self,
+            "Delete Increment",
+            f"Delete increment '{increment_name}'? This removes all of its versions from this app and cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            self.store.delete_increment(project_name, increment_name)
+            self._refresh_increment_table()
 
     # ------------------------------------------------------------------
     # Part 3: upload + review flow

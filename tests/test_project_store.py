@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -144,6 +145,14 @@ def main():
         if v1_path is None or not v1_path.name.startswith("v1_"):
             failures.append(f"version_path(1) mismatch: {v1_path}")
 
+        # list_versions(): newest first, for a version-selector dropdown
+        version_records = store.list_versions(project_name, "INC 1 - Foundation")
+        if [v.version for v in version_records] != [2, 1]:
+            failures.append(f"list_versions should be newest-first [2, 1], got {[v.version for v in version_records]}")
+        today_str = date.today().isoformat()
+        if any(v.uploaded_date != today_str for v in version_records):
+            failures.append(f"list_versions dates should all be today ({today_str}), got {version_records}")
+
         # original upload files must be untouched (copied, not moved)
         if not Path(file_v1).exists() or not Path(file_v2).exists():
             failures.append("create_increment/save_new_version should COPY the source file, not move it")
@@ -166,6 +175,59 @@ def main():
         ).read_text())
         if raw_on_disk != {"B-C1": {"5": "Done", "12": "Open"}, "B-F1": {"1": "Open"}}:
             failures.append(f"on-disk status.json should use string stage keys, got {raw_on_disk}")
+
+        # --- increment-level soft-delete: only the target increment
+        # moves, the project and its OTHER increments are untouched ---
+        file_v1_b = _make_fake_file(scratch, "inc2-v1.xlsm")
+        store.create_increment(project_name, "INC 2 - Sitework", file_v1_b)
+        store.save_status(project_name, "INC 2 - Sitework", {"C-F1": {3: "Done"}})
+        inc2 = store.get_increment(project_name, "INC 2 - Sitework")
+        inc2_slug = inc2.slug
+        inc2_original_path = store._increments_dir(store.get_project(project_name).slug) / inc2_slug
+
+        store.delete_increment(project_name, "INC 2 - Sitework")
+
+        if store.get_increment(project_name, "INC 2 - Sitework") is not None:
+            failures.append("delete_increment did not remove the increment")
+        if inc2_original_path.exists():
+            failures.append("delete_increment should remove the increment's folder from increments/, not just hide it")
+
+        remaining_increments = {i.name for i in store.list_increments(project_name)}
+        if remaining_increments != {"INC 1 - Foundation"}:
+            failures.append(
+                f"delete_increment should leave the project's OTHER increments untouched, got {remaining_increments}"
+            )
+        if store.get_project(project_name) is None:
+            failures.append("delete_increment should never remove the parent project itself")
+
+        # soft-delete: folder moved intact under _deleted/, prefixed with
+        # BOTH project and increment slug (increment slugs alone aren't
+        # unique across projects)
+        deleted_project_slug = store.get_project(project_name).slug
+        inc_deleted_candidates = [
+            d for d in deleted_dir.iterdir()
+            if d.is_dir() and d.name.endswith(f"_{deleted_project_slug}_{inc2_slug}")
+        ]
+        if len(inc_deleted_candidates) != 1:
+            failures.append(
+                f"expected exactly 1 folder under _deleted/ ending in "
+                f"'_{deleted_project_slug}_{inc2_slug}', found {inc_deleted_candidates}"
+            )
+        else:
+            deleted_inc2 = inc_deleted_candidates[0]
+            moved_increment_json = deleted_inc2 / "increment.json"
+            moved_status_json = deleted_inc2 / "status.json"
+            moved_files_dir = deleted_inc2 / "files"
+            if not moved_increment_json.exists():
+                failures.append(f"soft-deleted increment missing increment.json at {moved_increment_json}")
+            if not moved_status_json.exists() or json.loads(moved_status_json.read_text()) != {"C-F1": {"3": "Done"}}:
+                failures.append("soft-deleted increment's status.json should be preserved exactly as-is")
+            if not moved_files_dir.exists() or not any(moved_files_dir.iterdir()):
+                failures.append("soft-deleted increment's version files/ should be preserved, found none")
+
+        # deleting a nonexistent increment should be a no-op, not raise
+        store.delete_increment(project_name, "does not exist")
+        store.delete_increment("no such project", "does not exist")
 
         # --- nonexistent lookups shouldn't raise ---
         if store.get_increment(project_name, "does not exist") is not None:
