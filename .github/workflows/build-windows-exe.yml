@@ -25,24 +25,38 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Builds the real PySide6 app (ui/app.py) via run_app.py -- a tiny
+      # root-level wrapper, not ui/app.py directly, because ui/app.py's
+      # `from ui.main_window import MainWindow` only resolves when the
+      # repo root is on sys.path (true for `python -m ui.app`, NOT true
+      # for a plain script/PyInstaller invocation of ui/app.py itself).
+      # --add-data bundles assets/ (logo.png) AND ui/style.qss into the
+      # exe -- PyInstaller does not bundle arbitrary data files
+      # automatically, and style.qss specifically is NOT picked up just
+      # by being a module living next to ui/app.py (see ui/paths.py's
+      # get_bundled_path docstring for why __file__-relative lookups
+      # don't work in a frozen build) -- using the Windows-specific ';'
+      # separator (macOS/Linux use ':'). Bundled resources are then
+      # resolved at runtime via sys._MEIPASS, which is where --onefile
+      # extracts them (see ui/paths.py's get_bundled_path/get_asset_path).
       - name: Build executable (Windows)
         if: runner.os == 'Windows'
-        run: pyinstaller --onefile --windowed --name SubmissionApp app.py
+        run: pyinstaller --onefile --windowed --name AltamiranoBuildersAPP --add-data "assets;assets" --add-data "ui/style.qss;ui" run_app.py
 
       - name: Build executable (Mac)
         if: runner.os == 'macOS'
-        run: pyinstaller --onefile --windowed --name SubmissionApp app.py
+        run: pyinstaller --onefile --windowed --name AltamiranoBuildersAPP --add-data "assets:assets" --add-data "ui/style.qss:ui" run_app.py
 
       - name: Upload Windows artifact
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: SubmissionApp-windows
-          path: dist/SubmissionApp.exe
+          name: AltamiranoBuildersAPP-windows
+          path: dist/AltamiranoBuildersAPP.exe
 
       - name: Upload Mac artifact
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: SubmissionApp-mac
-          path: dist/SubmissionApp
+          name: AltamiranoBuildersAPP-mac
+          path: dist/AltamiranoBuildersAPP

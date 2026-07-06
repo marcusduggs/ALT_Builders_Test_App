@@ -1,0 +1,211 @@
+* {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 13px;
+    color: #1f2430;
+}
+
+QMainWindow, QDialog {
+    background: #f4f5f7;
+}
+
+/* ---------- generic panels/cards ---------- */
+QFrame#card {
+    background: #ffffff;
+    border: 1px solid #e0e2e8;
+    border-radius: 8px;
+}
+
+QLabel#pageTitle {
+    font-size: 18px;
+    font-weight: 600;
+    color: #12151c;
+}
+
+QLabel#sectionTitle {
+    font-size: 14px;
+    font-weight: 600;
+    color: #12151c;
+}
+
+QLabel#hint {
+    color: #6b7280;
+    font-size: 12px;
+}
+
+/* ---------- buttons ---------- */
+QPushButton {
+    background: #ffffff;
+    border: 1px solid #ccd0d9;
+    border-radius: 6px;
+    padding: 6px 14px;
+    color: #1f2430;
+}
+QPushButton:hover {
+    background: #f0f2f6;
+    border-color: #aeb4c2;
+}
+QPushButton:pressed {
+    background: #e4e7ee;
+}
+QPushButton:disabled {
+    color: #a6acb9;
+    background: #f2f3f5;
+    border-color: #e0e2e8;
+}
+
+QPushButton#primaryButton {
+    background: #2f6fed;
+    border: 1px solid #2559c7;
+    color: #ffffff;
+    font-weight: 600;
+}
+QPushButton#primaryButton:hover {
+    background: #2a63d6;
+}
+QPushButton#primaryButton:pressed {
+    background: #234fb0;
+}
+
+QPushButton#dangerButton {
+    background: #ffffff;
+    border: 1px solid #d64545;
+    color: #c62d2d;
+}
+QPushButton#dangerButton:hover {
+    background: #fdeaea;
+}
+
+QPushButton#confirmButton {
+    background: #16324f;
+    border: 1px solid #0d2038;
+    color: #ffffff;
+    font-weight: 600;
+    padding: 9px 22px;
+    font-size: 14px;
+}
+QPushButton#confirmButton:hover {
+    background: #10263d;
+}
+QPushButton#confirmButton:pressed {
+    background: #0a1b2d;
+}
+
+QPushButton#discardButton {
+    background: transparent;
+    border: 1px solid #ccd0d9;
+    color: #4b5262;
+    padding: 9px 22px;
+    font-size: 14px;
+}
+QPushButton#discardButton:hover {
+    background: #eceef2;
+}
+
+/* ---------- combo / inputs ---------- */
+QComboBox, QLineEdit, QSpinBox {
+    background: #ffffff;
+    border: 1px solid #ccd0d9;
+    border-radius: 6px;
+    padding: 5px 8px;
+    min-height: 20px;
+}
+QComboBox:hover, QLineEdit:hover, QSpinBox:hover {
+    border-color: #aeb4c2;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 22px;
+}
+
+/* ---------- increment table ---------- */
+QTableWidget, QTableView {
+    background: #ffffff;
+    border: 1px solid #e0e2e8;
+    border-radius: 6px;
+    gridline-color: #edeef2;
+    selection-background-color: #dce6fb;
+    selection-color: #12151c;
+}
+QHeaderView::section {
+    background: #f4f5f7;
+    color: #4b5262;
+    font-weight: 600;
+    padding: 6px;
+    border: none;
+    border-bottom: 1px solid #e0e2e8;
+    border-right: 1px solid #edeef2;
+}
+/* NOTE: deliberately no `QTableWidget::item { padding: ... }` rule here.
+   That combined with setCellWidget() (used for the increment list's action
+   buttons) triggers a real Qt/PySide6 paint corruption bug -- the embedded
+   widget renders with garbled/mirrored text. Reproduced in isolation, well
+   outside this app's own layout code; not worth the risk anywhere else
+   either, so it's simply not used. Row/column sizing already gives cells
+   enough breathing room without it. */
+
+/* ---------- status bar / footer ---------- */
+QFrame#footerBar {
+    background: #12151c;
+    border-radius: 6px;
+}
+QFrame#footerBar QLabel {
+    color: #e8eaf0;
+    padding: 8px 4px;
+}
+QFrame#footerBar QLabel#footerHighlight {
+    color: #ffd166;
+    font-weight: 600;
+}
+
+/* ---------- review screen ---------- */
+QFrame#reviewHeader {
+    background: #16324f;
+    border-radius: 8px;
+}
+QFrame#reviewHeader QLabel {
+    color: #ffffff;
+}
+QFrame#reviewHeader QLabel#reviewSubtitle {
+    color: #b9cbe0;
+}
+
+QFrame#changeSectionAdded {
+    background: #eaf7ee;
+    border: 1px solid #b7e3c3;
+    border-radius: 6px;
+}
+QFrame#changeSectionRemoved {
+    background: #fdecec;
+    border: 1px solid #f2b8b8;
+    border-radius: 6px;
+}
+QFrame#changeSectionWarning {
+    background: #fff6e5;
+    border: 1px solid #f2d38a;
+    border-radius: 6px;
+}
+QFrame#changeSectionInfo {
+    background: #eef2fb;
+    border: 1px solid #c4d3f2;
+    border-radius: 6px;
+}
+QFrame#noChangesBanner {
+    background: #eef2fb;
+    border: 1px solid #c4d3f2;
+    border-radius: 8px;
+}
+
+QLabel#changeSectionTitleAdded { color: #1f7a3d; font-weight: 600; }
+QLabel#changeSectionTitleRemoved { color: #b3261e; font-weight: 600; }
+QLabel#changeSectionTitleWarning { color: #8a5a00; font-weight: 600; }
+QLabel#changeSectionTitleInfo { color: #2c4c9e; font-weight: 600; }
+
+/* ---------- badges ---------- */
+QLabel#needsStatusBadge {
+    background: #ffb703;
+    color: #3a2900;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 11px;
+    padding: 0px 5px;
+}
