@@ -32,7 +32,7 @@ def main():
         project_store = ProjectStore(base_dir=Path(tmp) / "data")
         store = MockDataStore(project_store)
 
-        store.add_project(PROJECT_NAME, "/tmp/sdr")
+        store.add_project(PROJECT_NAME)
         increment = store.add_new_increment(PROJECT_NAME, FIXTURE)
         display = store.get_increment_for_display(PROJECT_NAME, increment.name)
 
@@ -273,7 +273,7 @@ def main():
         demo_after = os.path.join(os.path.dirname(__file__), "fixtures", "demo_after.xlsm")
         growth_project = "Sum Data Growth Validation"
 
-        store.add_project(growth_project, "/tmp/growth")
+        store.add_project(growth_project)
         demo_increment = store.add_new_increment(growth_project, demo_before)
         display_before = store.get_increment_for_display(growth_project, demo_increment.name)
 

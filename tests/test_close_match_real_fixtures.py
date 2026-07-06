@@ -36,7 +36,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         project_store = ProjectStore(base_dir=Path(tmp) / "data")
         store = MockDataStore(project_store)
-        store.add_project(PROJECT_NAME, "/tmp/close-match-validation")
+        store.add_project(PROJECT_NAME)
 
         # ------------------------------------------------------------
         # 1 -- demo_inc3_new.xlsm against a project with no matching

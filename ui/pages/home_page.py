@@ -128,11 +128,11 @@ class HomePage(QWidget):
     def _on_add_project(self):
         dialog = ProjectDialog(project=None, parent=self)
         if dialog.exec() == QDialog.Accepted:
-            name, folder = dialog.values()
+            name = dialog.values()
             if name in self.store.project_names():
                 QMessageBox.warning(self, "Project Exists", f"A project named '{name}' already exists.")
                 return
-            self.store.add_project(name, folder)
+            self.store.add_project(name)
             self._refresh_project_combo(select_name=name)
 
     def _on_update_project(self):
@@ -142,8 +142,8 @@ class HomePage(QWidget):
         project = self.store.get_project(current_name)
         dialog = ProjectDialog(project=project, parent=self)
         if dialog.exec() == QDialog.Accepted:
-            name, folder = dialog.values()
-            self.store.update_project(current_name, name, folder)
+            name = dialog.values()
+            self.store.update_project(current_name, name)
             self._refresh_project_combo(select_name=name)
 
     def _on_delete_project(self):

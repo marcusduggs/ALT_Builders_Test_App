@@ -208,11 +208,11 @@ class MockDataStore:
             increments=increments,
         )
 
-    def add_project(self, name: str, home_folder: str) -> None:
-        self.store.create_project(name, home_folder)
+    def add_project(self, name: str) -> None:
+        self.store.create_project(name)
 
-    def update_project(self, old_name: str, name: str, home_folder: str) -> None:
-        self.store.update_project(old_name, name, home_folder)
+    def update_project(self, old_name: str, name: str) -> None:
+        self.store.update_project(old_name, name)
 
     def delete_project(self, name: str) -> None:
         self.store.delete_project(name)

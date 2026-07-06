@@ -53,7 +53,7 @@ def main():
         print("4.1 -- Upload sample_increment.xlsm as a new increment")
         print("=" * 70)
 
-        store.add_project(PROJECT_NAME, "/tmp/e2e")
+        store.add_project(PROJECT_NAME)
         increment = store.add_new_increment(PROJECT_NAME, FIXTURE)
         print(f"Created increment {increment.name!r}, version {increment.version}")
 

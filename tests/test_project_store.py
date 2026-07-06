@@ -33,21 +33,27 @@ def main():
         scratch.mkdir()
 
         # --- project CRUD ---
-        store.create_project("Test Hospital - Wing A", "/tmp/wing-a")
-        store.create_project("Test Hospital - Wing B", "/tmp/wing-b")
+        store.create_project("Test Hospital - Wing A")
+        store.create_project("Test Hospital - Wing B")
 
         names = {p.name for p in store.list_projects()}
         if names != {"Test Hospital - Wing A", "Test Hospital - Wing B"}:
             failures.append(f"list_projects mismatch: {names}")
 
         original = store.get_project("Test Hospital - Wing A")
-        if original is None or original.home_folder != "/tmp/wing-a":
-            failures.append(f"get_project mismatch: {original}")
+        # home_folder is purely computed -- always THIS project's own
+        # folder (base_dir/projects/<slug>/), never user-suppliable, and
+        # never stale relative to the slug it's derived from.
+        expected_home_folder = str(store.projects_dir / original.slug) if original else None
+        if original is None or original.home_folder != expected_home_folder:
+            failures.append(f"get_project mismatch: {original}, expected home_folder {expected_home_folder!r}")
 
-        store.update_project("Test Hospital - Wing A", "Test Hospital - Wing A (Renamed)", "/tmp/wing-a2")
+        store.update_project("Test Hospital - Wing A", "Test Hospital - Wing A (Renamed)")
         renamed = store.get_project("Test Hospital - Wing A (Renamed)")
-        if renamed is None or renamed.home_folder != "/tmp/wing-a2":
-            failures.append(f"update_project mismatch: {renamed}")
+        # renaming must NOT change the slug, so home_folder (derived from
+        # slug) must be identical before and after the rename
+        if renamed is None or renamed.home_folder != expected_home_folder:
+            failures.append(f"update_project mismatch: {renamed}, expected home_folder {expected_home_folder!r}")
         if store.get_project("Test Hospital - Wing A") is not None:
             failures.append("update_project should make the old name unresolvable")
         if renamed is not None and original is not None and renamed.slug != original.slug:
@@ -93,9 +99,9 @@ def main():
                 failures.append("soft-deleted project's version files/ should be preserved, found none")
 
         # --- deleting two similarly-named/sluggy projects must not collide in _deleted/ ---
-        store.create_project("Collision Test", "/tmp/collision-a")
+        store.create_project("Collision Test")
         store.delete_project("Collision Test")
-        store.create_project("Collision Test", "/tmp/collision-b")
+        store.create_project("Collision Test")
         store.delete_project("Collision Test")
         collision_dirs = [d for d in deleted_dir.iterdir() if d.is_dir() and "collision-test" in d.name]
         if len(collision_dirs) != 2:

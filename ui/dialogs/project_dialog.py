@@ -7,11 +7,8 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
-    QFileDialog,
     QFormLayout,
-    QHBoxLayout,
     QLineEdit,
-    QPushButton,
     QVBoxLayout,
 )
 
@@ -24,21 +21,27 @@ class ProjectDialog(QDialog):
         self.setMinimumWidth(420)
 
         self.name_edit = QLineEdit()
+
+        # Home Folder is purely informational -- always this SPECIFIC
+        # project's own folder (core.project_store.ProjectRecord.home_folder,
+        # computed fresh from the project's slug, never stored/user-set --
+        # see core/project_store.py's module docstring). Disabled, not just
+        # read-only, so it visually reads as "this isn't yours to edit."
+        # A new project's slug doesn't exist until it's actually created
+        # (create_project() generates it), so there's nothing real to show
+        # here yet -- the placeholder says so, and the real path appears
+        # the next time this project is opened for Update.
         self.folder_edit = QLineEdit()
-        browse_button = QPushButton("Browse...")
-        browse_button.clicked.connect(self._browse_folder)
-
-        folder_row = QHBoxLayout()
-        folder_row.addWidget(self.folder_edit)
-        folder_row.addWidget(browse_button)
-
+        self.folder_edit.setEnabled(False)
         if project is not None:
             self.name_edit.setText(project.name)
             self.folder_edit.setText(project.home_folder)
+        else:
+            self.folder_edit.setPlaceholderText("(assigned automatically once this project is created)")
 
         form = QFormLayout()
         form.addRow("Project Name:", self.name_edit)
-        form.addRow("Home Folder:", folder_row)
+        form.addRow("Home Folder:", self.folder_edit)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._on_accept)
@@ -48,19 +51,11 @@ class ProjectDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(buttons)
 
-    def _browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Home Folder", self.folder_edit.text())
-        if folder:
-            self.folder_edit.setText(folder)
-
     def _on_accept(self):
         if not self.name_edit.text().strip():
             self.name_edit.setFocus()
             return
         self.accept()
 
-    def values(self) -> tuple[str, str]:
-        return (
-            self.name_edit.text().strip(),
-            self.folder_edit.text().strip(),
-        )
+    def values(self) -> str:
+        return self.name_edit.text().strip()

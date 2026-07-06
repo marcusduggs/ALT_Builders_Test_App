@@ -14,7 +14,13 @@ Layout:
     <base_dir>/
       projects/
         <project-slug>/
-          project.json                  {name, home_folder}
+          project.json                  {name} -- home_folder is NOT stored: it's
+                                         purely informational, always computed
+                                         fresh as this project's own folder
+                                         (<base_dir>/projects/<slug>/), never
+                                         user-editable and never at risk of
+                                         drifting stale if base_dir itself is
+                                         ever renamed (see _migrate_legacy_data_dir)
           increments/
             <increment-slug>/
               increment.json            {name, version, last_updated}
@@ -163,21 +169,26 @@ class ProjectStore:
     def _project_json_path(self, slug: str) -> Path:
         return self.projects_dir / slug / "project.json"
 
+    def _project_dir_path(self, slug: str) -> Path:
+        return self.projects_dir / slug
+
     def list_projects(self) -> list[ProjectRecord]:
         records = []
         for project_dir in self._project_dirs():
             json_path = project_dir / "project.json"
             if not json_path.exists():
                 continue
-            # NOTE: data may still have a "max_increments" key from a
-            # project.json written before that field was removed -- it's
+            # NOTE: data may still have "home_folder"/"max_increments" keys
+            # from a project.json written before those were removed --
             # simply never read here, so old files load exactly like new
-            # ones instead of erroring on an unexpected key.
+            # ones instead of erroring on an unexpected key. home_folder is
+            # always computed fresh below, never trusted from disk, so it
+            # can never go stale relative to base_dir/slug.
             data = _read_json(json_path)
             records.append(
                 ProjectRecord(
                     name=data["name"],
-                    home_folder=data.get("home_folder", ""),
+                    home_folder=str(self._project_dir_path(project_dir.name)),
                     slug=project_dir.name,
                 )
             )
@@ -186,24 +197,18 @@ class ProjectStore:
     def get_project(self, name: str) -> ProjectRecord | None:
         return next((p for p in self.list_projects() if p.name == name), None)
 
-    def create_project(self, name: str, home_folder: str) -> ProjectRecord:
+    def create_project(self, name: str) -> ProjectRecord:
         taken = {p.name for p in self._project_dirs()}
         slug = _unique_slug(_slugify(name), taken)
-        _write_json(
-            self._project_json_path(slug),
-            {"name": name, "home_folder": home_folder},
-        )
-        return ProjectRecord(name=name, home_folder=home_folder, slug=slug)
+        _write_json(self._project_json_path(slug), {"name": name})
+        return ProjectRecord(name=name, home_folder=str(self._project_dir_path(slug)), slug=slug)
 
-    def update_project(self, name: str, new_name: str, home_folder: str) -> ProjectRecord | None:
+    def update_project(self, name: str, new_name: str) -> ProjectRecord | None:
         project = self.get_project(name)
         if project is None:
             return None
-        _write_json(
-            self._project_json_path(project.slug),
-            {"name": new_name, "home_folder": home_folder},
-        )
-        return ProjectRecord(name=new_name, home_folder=home_folder, slug=project.slug)
+        _write_json(self._project_json_path(project.slug), {"name": new_name})
+        return ProjectRecord(name=new_name, home_folder=str(self._project_dir_path(project.slug)), slug=project.slug)
 
     def delete_project(self, name: str) -> None:
         """Soft-delete: moves the project's whole folder -- every
