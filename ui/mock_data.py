@@ -21,7 +21,8 @@ from typing import Any
 
 import pandas as pd
 
-from core import excel_reader, status_tracker, structure_diff, value_diff
+from core import excel_reader, increment_matcher, status_tracker, structure_diff, value_diff
+from core.increment_matcher import MatchResult
 from core.project_store import ProjectStore
 
 STAGE_COUNT = excel_reader.STAGE_COUNT
@@ -82,7 +83,6 @@ class Increment:
 class Project:
     name: str
     home_folder: str
-    max_increments: int
     increments: list[Increment] = field(default_factory=list)
 
 
@@ -205,15 +205,14 @@ class MockDataStore:
         return Project(
             name=record.name,
             home_folder=record.home_folder,
-            max_increments=record.max_increments,
             increments=increments,
         )
 
-    def add_project(self, name: str, home_folder: str, max_increments: int) -> None:
-        self.store.create_project(name, home_folder, max_increments)
+    def add_project(self, name: str, home_folder: str) -> None:
+        self.store.create_project(name, home_folder)
 
-    def update_project(self, old_name: str, name: str, home_folder: str, max_increments: int) -> None:
-        self.store.update_project(old_name, name, home_folder, max_increments)
+    def update_project(self, old_name: str, name: str, home_folder: str) -> None:
+        self.store.update_project(old_name, name, home_folder)
 
     def delete_project(self, name: str) -> None:
         self.store.delete_project(name)
@@ -221,6 +220,25 @@ class MockDataStore:
     # ------------------------------------------------------------------
     # increment upload / review flow
     # ------------------------------------------------------------------
+    def match_upload(self, project_name: str, file_path: str) -> MatchResult:
+        """The single decision behind the unified "Upload File" flow:
+        reads file_path's real identity (core.excel_reader.get_record_name)
+        and compares it against every increment already stored in
+        project_name (core.increment_matcher.match_increment) to decide
+        whether this upload is a new increment, a new version of an
+        existing one, or a close-enough call that a human should decide.
+
+        Raises whatever get_record_name() raises if the file has no
+        readable Record Name -- a required field for this flow, not
+        something to silently route around.
+
+        This does real openpyxl parsing (multi-second for a real file) --
+        callers on the UI thread should run it via ui.workers.run_with_progress.
+        """
+        record_name = excel_reader.get_record_name(file_path)
+        existing_names = [i.name for i in self.store.list_increments(project_name)]
+        return increment_matcher.match_increment(existing_names, record_name)
+
     def add_new_increment(self, project_name: str, file_path: str) -> Increment:
         """Parses file_path, names the increment from its A-Project Info
         "Record Name (Scope of Project)" field (see

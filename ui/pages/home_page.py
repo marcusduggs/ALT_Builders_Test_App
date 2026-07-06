@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.increment_matcher import MatchType
 from ui.dialogs.project_dialog import ProjectDialog
 from ui.dialogs.review_dialog import ReviewDialog
 from ui.mock_data import MockDataStore
@@ -127,11 +128,11 @@ class HomePage(QWidget):
     def _on_add_project(self):
         dialog = ProjectDialog(project=None, parent=self)
         if dialog.exec() == QDialog.Accepted:
-            name, folder, max_inc = dialog.values()
+            name, folder = dialog.values()
             if name in self.store.project_names():
                 QMessageBox.warning(self, "Project Exists", f"A project named '{name}' already exists.")
                 return
-            self.store.add_project(name, folder, max_inc)
+            self.store.add_project(name, folder)
             self._refresh_project_combo(select_name=name)
 
     def _on_update_project(self):
@@ -141,8 +142,8 @@ class HomePage(QWidget):
         project = self.store.get_project(current_name)
         dialog = ProjectDialog(project=project, parent=self)
         if dialog.exec() == QDialog.Accepted:
-            name, folder, max_inc = dialog.values()
-            self.store.update_project(current_name, name, folder, max_inc)
+            name, folder = dialog.values()
+            self.store.update_project(current_name, name, folder)
             self._refresh_project_combo(select_name=name)
 
     def _on_delete_project(self):
@@ -173,12 +174,12 @@ class HomePage(QWidget):
         header_row = QHBoxLayout()
         title = QLabel("Increments")
         title.setObjectName("sectionTitle")
-        upload_new_button = QPushButton("Upload New Increment")
-        upload_new_button.setObjectName("primaryButton")
-        upload_new_button.clicked.connect(self._on_upload_new_increment)
+        upload_button = QPushButton("Upload File")
+        upload_button.setObjectName("primaryButton")
+        upload_button.clicked.connect(self._on_upload_file)
         header_row.addWidget(title)
         header_row.addStretch(1)
-        header_row.addWidget(upload_new_button)
+        header_row.addWidget(upload_button)
         layout.addLayout(header_row)
 
         self.increment_table = QTableWidget(0, 4)
@@ -193,7 +194,7 @@ class HomePage(QWidget):
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         layout.addWidget(self.increment_table)
 
-        self.empty_state_label = QLabel("No increments yet for this project. Use “Upload New Increment” to add one.")
+        self.empty_state_label = QLabel("No increments yet for this project. Use “Upload File” to add one.")
         self.empty_state_label.setObjectName("hint")
         self.empty_state_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.empty_state_label)
@@ -216,13 +217,10 @@ class HomePage(QWidget):
             actions_layout.setContentsMargins(4, 2, 4, 2)
             actions_layout.setSpacing(6)
 
-            upload_button = QPushButton("Upload New Version")
-            upload_button.clicked.connect(partial(self._on_upload_new_version, project_name, increment.name))
             view_button = QPushButton("View Data")
             view_button.setObjectName("primaryButton")
             view_button.clicked.connect(partial(self.on_view_data, project_name, increment.name))
 
-            actions_layout.addWidget(upload_button)
             actions_layout.addWidget(view_button)
             self.increment_table.setCellWidget(row, 3, actions)
 
@@ -232,11 +230,60 @@ class HomePage(QWidget):
     # ------------------------------------------------------------------
     # Part 3: upload + review flow
     # ------------------------------------------------------------------
-    def _on_upload_new_version(self, project_name: str, increment_name: str):
-        file_path, _ = QFileDialog.getOpenFileName(self, f"Upload new version of {increment_name}", "", EXCEL_FILE_FILTER)
+    def _on_upload_file(self):
+        """The single upload entry point: identifies the file's increment
+        (core.excel_reader.get_record_name) and routes to whichever of
+        the two flows below applies, based on
+        core.increment_matcher.match_increment against this project's
+        existing increments -- the user never manually chooses "new
+        increment" vs. "new version" or picks which increment to update.
+        """
+        project_name = self._current_project_name()
+        if not project_name:
+            QMessageBox.information(self, "No Project Selected", "Add or select a project first.")
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(self, "Upload File", "", EXCEL_FILE_FILTER)
         if not file_path:
             return
 
+        def on_matched(match_result):
+            if match_result.match_type == MatchType.EXACT_MATCH:
+                self._upload_as_new_version(project_name, match_result.matched_increment_name, file_path)
+            elif match_result.match_type == MatchType.CLOSE_MATCH:
+                self._confirm_close_match(project_name, file_path, match_result.matched_increment_name)
+            else:
+                self._upload_as_new_increment(project_name, file_path)
+
+        def on_error(exc):
+            QMessageBox.critical(
+                self, "Could Not Read File", f"This file's increment identity couldn't be read:\n\n{exc}"
+            )
+
+        run_with_progress(
+            self, "Reading file...", self.store.match_upload,
+            on_matched, on_error, project_name, file_path,
+        )
+
+    def _confirm_close_match(self, project_name: str, file_path: str, matched_increment_name: str):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Similar Increment Found")
+        box.setText(
+            f"This looks similar to '{matched_increment_name}' — is this an update to that "
+            "increment, or a new one?"
+        )
+        update_button = box.addButton("Update Existing", QMessageBox.AcceptRole)
+        box.addButton("Create New", QMessageBox.RejectRole)
+        box.setDefaultButton(update_button)
+        box.exec()
+
+        if box.clickedButton() is update_button:
+            self._upload_as_new_version(project_name, matched_increment_name, file_path)
+        else:
+            self._upload_as_new_increment(project_name, file_path)
+
+    def _upload_as_new_version(self, project_name: str, increment_name: str, file_path: str):
         def on_finished(result):
             review = ReviewDialog(increment_name, result, parent=self)
             if review.exec() == QDialog.Accepted:
@@ -254,16 +301,7 @@ class HomePage(QWidget):
             on_finished, on_error, project_name, increment_name, file_path,
         )
 
-    def _on_upload_new_increment(self):
-        project_name = self._current_project_name()
-        if not project_name:
-            QMessageBox.information(self, "No Project Selected", "Add or select a project first.")
-            return
-
-        file_path, _ = QFileDialog.getOpenFileName(self, "Upload New Increment", "", EXCEL_FILE_FILTER)
-        if not file_path:
-            return
-
+    def _upload_as_new_increment(self, project_name: str, file_path: str):
         def on_finished(increment):
             self._refresh_increment_table()
             QMessageBox.information(
@@ -273,7 +311,9 @@ class HomePage(QWidget):
         def on_error(exc):
             if isinstance(exc, ValueError):
                 # e.g. an increment with this file's Record Name already
-                # exists in this project -- "Upload New Version" on it instead.
+                # exists in this project -- shouldn't normally happen
+                # here (match_upload() already checked), but is still a
+                # real error if it does.
                 QMessageBox.warning(self, "Could Not Add Increment", str(exc))
             else:
                 QMessageBox.critical(self, "Could Not Read File", f"This file couldn't be parsed:\n\n{exc}")

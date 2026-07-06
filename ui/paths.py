@@ -32,7 +32,7 @@ def get_bundled_path(*parts: str) -> Path:
     inside the exe rather than extracting them as loose files, even under
     _MEIPASS, so `Path(__file__).parent` can't be trusted there the way
     it can when running as a script. get_app_dir()'s dirname(sys.executable)
-    is still correct for user data (~/SubmissionAppData is home-based
+    is still correct for user data (~/AltamiranoBuildersAppData is home-based
     anyway, so it's untouched by this) and would be correct for a
     --onedir build's resources too, but --onefile is what this project
     builds, so sys._MEIPASS must be checked first.

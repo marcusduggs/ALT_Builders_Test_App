@@ -2,7 +2,7 @@
 End-to-end validation of the real (non-mock) upload -> review -> confirm ->
 display loop at (Index, Stage) status granularity, using the actual
 sample_increment.xlsm fixture and a temp-directory ProjectStore (never
-touches the real ~/SubmissionAppData).
+touches the real ~/AltamiranoBuildersAppData).
 
 Exercises ui.mock_data.MockDataStore exactly the way the UI does -- status
 marks are set via store.set_stage_status(), the same call
@@ -53,7 +53,7 @@ def main():
         print("4.1 -- Upload sample_increment.xlsm as a new increment")
         print("=" * 70)
 
-        store.add_project(PROJECT_NAME, "/tmp/e2e", 10)
+        store.add_project(PROJECT_NAME, "/tmp/e2e")
         increment = store.add_new_increment(PROJECT_NAME, FIXTURE)
         print(f"Created increment {increment.name!r}, version {increment.version}")
 

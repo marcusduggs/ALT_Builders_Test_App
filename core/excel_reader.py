@@ -333,6 +333,10 @@ PROJECT_INFO_FACILITY_NUM_CELL = "D12"
 PROJECT_INFO_FACILITY_NAME_CELL = "F12"
 PROJECT_INFO_PROJECT_NUM_CELL = "I12"
 PROJECT_INFO_RECORD_NAME_CELL = "G15"
+PROJECT_INFO_SHEET = "A-Project Info"
+RECORD_NAME_LABEL = "record name"
+RECORD_NAME_SEARCH_ROWS = range(1, 30)
+RECORD_NAME_SEARCH_COLS = range(1, 20)
 STAGE_NAME_FIRST_ROW = 25
 STAGE_NAME_LAST_ROW = 66
 STAGE_NAME_NUM_COL = 4  # D
@@ -528,6 +532,60 @@ def parse_project_info(ws) -> dict[str, Any]:
         "record_name": ws[PROJECT_INFO_RECORD_NAME_CELL].value,
         "stage_names": stage_names,
     }
+
+
+def _find_record_name_label_cell(ws):
+    for row in RECORD_NAME_SEARCH_ROWS:
+        for col in RECORD_NAME_SEARCH_COLS:
+            value = ws.cell(row=row, column=col).value
+            if isinstance(value, str) and value.strip().lower().startswith(RECORD_NAME_LABEL):
+                return row, col
+    return None
+
+
+def get_record_name(path: Any) -> str:
+    """Extracts the increment's real identity -- A-Project Info's "Record
+    Name (Scope of Project)" field -- by searching for that label's text
+    rather than assuming a fixed cell address (the same reasoning
+    _find_header_row applies to the blue sheets: a label can drift to a
+    different cell across template revisions, but its text doesn't).
+
+    This is the source of truth core.increment_matcher uses to decide
+    whether an upload is a new increment or a new version of an existing
+    one -- unlike parse_project_info()'s "record_name" (a tolerant,
+    fixed-cell read used only for cosmetic labeling, e.g. All Data's
+    "Inc #" column), a wrong or missing answer here would silently
+    misfile an upload, so this raises instead of returning None/blank on
+    anything unexpected.
+
+    `path` may be a file path (str/Path) or an already-open Workbook (see
+    open_workbook) -- same convention as compare_structure()/compare_values().
+
+    The returned value is trimmed and has internal whitespace collapsed
+    to single spaces (needed for reliable exact-match comparison later --
+    see core.increment_matcher), but is NOT case-folded or otherwise
+    mangled: it's still the real display name, used as-is for the
+    increment's name in the app.
+    """
+    wb = open_workbook(path)
+    ws = wb[PROJECT_INFO_SHEET]
+
+    label_cell = _find_record_name_label_cell(ws)
+    if label_cell is None:
+        raise ValueError(
+            f"Could not find the 'Record Name (Scope of Project)' label in {PROJECT_INFO_SHEET!r} of {path!r}"
+        )
+    label_row, label_col = label_cell
+
+    for col in range(label_col + 1, max(RECORD_NAME_SEARCH_COLS) + 1):
+        value = ws.cell(row=label_row, column=col).value
+        if value not in (None, ""):
+            return " ".join(str(value).split()).strip()
+
+    raise ValueError(
+        f"Found the 'Record Name (Scope of Project)' label in {PROJECT_INFO_SHEET!r} of {path!r}, "
+        "but no value next to it"
+    )
 
 
 def open_workbook(path_or_workbook: Any) -> openpyxl.Workbook:

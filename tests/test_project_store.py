@@ -1,6 +1,6 @@
 """
 Tests core/project_store.py against a temp directory -- never touches the
-real ~/SubmissionAppData.
+real ~/AltamiranoBuildersAppData.
 
 Run directly: `python tests/test_project_store.py`
 """
@@ -32,20 +32,20 @@ def main():
         scratch.mkdir()
 
         # --- project CRUD ---
-        store.create_project("Test Hospital - Wing A", "/tmp/wing-a", 5)
-        store.create_project("Test Hospital - Wing B", "/tmp/wing-b", 3)
+        store.create_project("Test Hospital - Wing A", "/tmp/wing-a")
+        store.create_project("Test Hospital - Wing B", "/tmp/wing-b")
 
         names = {p.name for p in store.list_projects()}
         if names != {"Test Hospital - Wing A", "Test Hospital - Wing B"}:
             failures.append(f"list_projects mismatch: {names}")
 
         original = store.get_project("Test Hospital - Wing A")
-        if original is None or original.home_folder != "/tmp/wing-a" or original.max_increments != 5:
+        if original is None or original.home_folder != "/tmp/wing-a":
             failures.append(f"get_project mismatch: {original}")
 
-        store.update_project("Test Hospital - Wing A", "Test Hospital - Wing A (Renamed)", "/tmp/wing-a2", 7)
+        store.update_project("Test Hospital - Wing A", "Test Hospital - Wing A (Renamed)", "/tmp/wing-a2")
         renamed = store.get_project("Test Hospital - Wing A (Renamed)")
-        if renamed is None or renamed.home_folder != "/tmp/wing-a2" or renamed.max_increments != 7:
+        if renamed is None or renamed.home_folder != "/tmp/wing-a2":
             failures.append(f"update_project mismatch: {renamed}")
         if store.get_project("Test Hospital - Wing A") is not None:
             failures.append("update_project should make the old name unresolvable")
@@ -92,9 +92,9 @@ def main():
                 failures.append("soft-deleted project's version files/ should be preserved, found none")
 
         # --- deleting two similarly-named/sluggy projects must not collide in _deleted/ ---
-        store.create_project("Collision Test", "/tmp/collision-a", 1)
+        store.create_project("Collision Test", "/tmp/collision-a")
         store.delete_project("Collision Test")
-        store.create_project("Collision Test", "/tmp/collision-b", 1)
+        store.create_project("Collision Test", "/tmp/collision-b")
         store.delete_project("Collision Test")
         collision_dirs = [d for d in deleted_dir.iterdir() if d.is_dir() and "collision-test" in d.name]
         if len(collision_dirs) != 2:

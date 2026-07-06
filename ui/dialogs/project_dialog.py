@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLineEdit,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
 )
 
@@ -33,19 +32,13 @@ class ProjectDialog(QDialog):
         folder_row.addWidget(self.folder_edit)
         folder_row.addWidget(browse_button)
 
-        self.max_increments_spin = QSpinBox()
-        self.max_increments_spin.setRange(1, 999)
-        self.max_increments_spin.setValue(10)
-
         if project is not None:
             self.name_edit.setText(project.name)
             self.folder_edit.setText(project.home_folder)
-            self.max_increments_spin.setValue(project.max_increments)
 
         form = QFormLayout()
         form.addRow("Project Name:", self.name_edit)
         form.addRow("Home Folder:", folder_row)
-        form.addRow("Max Increments:", self.max_increments_spin)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._on_accept)
@@ -66,9 +59,8 @@ class ProjectDialog(QDialog):
             return
         self.accept()
 
-    def values(self) -> tuple[str, str, int]:
+    def values(self) -> tuple[str, str]:
         return (
             self.name_edit.text().strip(),
             self.folder_edit.text().strip(),
-            self.max_increments_spin.value(),
         )

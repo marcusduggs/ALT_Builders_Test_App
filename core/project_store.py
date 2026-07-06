@@ -5,14 +5,16 @@ zero-setup local tool. Every uploaded file is kept forever (versioned,
 never overwritten), so there's always an audit trail of exactly what the
 state sent and when.
 
-Default data directory: ~/SubmissionAppData
+Default data directory: ~/AltamiranoBuildersAppData (auto-migrated in
+place from ~/SubmissionAppData -- this project's old working name -- if
+found; see _migrate_legacy_data_dir())
 
 Layout:
 
     <base_dir>/
       projects/
         <project-slug>/
-          project.json                  {name, home_folder, max_increments}
+          project.json                  {name, home_folder}
           increments/
             <increment-slug>/
               increment.json            {name, version, last_updated}
@@ -53,15 +55,35 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DATA_DIR = Path.home() / "SubmissionAppData"
+LEGACY_DATA_DIR_NAME = "SubmissionAppData"  # this project's old working name
+DATA_DIR_NAME = "AltamiranoBuildersAppData"
+DEFAULT_DATA_DIR = Path.home() / DATA_DIR_NAME
 DELETED_DIRNAME = "_deleted"
+
+
+def _migrate_legacy_data_dir() -> None:
+    """One-time migration: if ~/SubmissionAppData (the old name) still
+    exists and ~/AltamiranoBuildersAppData (the new one) doesn't yet,
+    rename the folder in place -- same parent directory, so this is an
+    instant filesystem rename, not a copy, and every project/increment/
+    status file underneath it moves untouched along with it.
+
+    If the new folder already exists, this does nothing at all: never
+    merges, never deletes -- there's no path by which existing data
+    could be lost to an edge case here. Safe to call on every startup:
+    idempotent, since the second call onward always finds the new
+    folder already in place and no-ops.
+    """
+    legacy_dir = Path.home() / LEGACY_DATA_DIR_NAME
+    if legacy_dir.exists() and not DEFAULT_DATA_DIR.exists():
+        legacy_dir.rename(DEFAULT_DATA_DIR)
+        print(f"Migrated existing data from {LEGACY_DATA_DIR_NAME} to {DATA_DIR_NAME}")
 
 
 @dataclass
 class ProjectRecord:
     name: str
     home_folder: str
-    max_increments: int
     slug: str
 
 
@@ -116,6 +138,13 @@ class ProjectStore:
 
     def __init__(self, base_dir: str | Path = DEFAULT_DATA_DIR):
         self.base_dir = Path(base_dir)
+        # Only when using the real default location -- never for a
+        # caller-supplied base_dir (every test in this repo passes its
+        # own temp dir specifically so it never touches the real
+        # ~/AltamiranoBuildersAppData, and migrating some unrelated temp
+        # dir would make no sense anyway).
+        if self.base_dir == DEFAULT_DATA_DIR:
+            _migrate_legacy_data_dir()
         self.projects_dir = self.base_dir / "projects"
         self.projects_dir.mkdir(parents=True, exist_ok=True)
 
@@ -134,12 +163,15 @@ class ProjectStore:
             json_path = project_dir / "project.json"
             if not json_path.exists():
                 continue
+            # NOTE: data may still have a "max_increments" key from a
+            # project.json written before that field was removed -- it's
+            # simply never read here, so old files load exactly like new
+            # ones instead of erroring on an unexpected key.
             data = _read_json(json_path)
             records.append(
                 ProjectRecord(
                     name=data["name"],
                     home_folder=data.get("home_folder", ""),
-                    max_increments=data.get("max_increments", 0),
                     slug=project_dir.name,
                 )
             )
@@ -148,24 +180,24 @@ class ProjectStore:
     def get_project(self, name: str) -> ProjectRecord | None:
         return next((p for p in self.list_projects() if p.name == name), None)
 
-    def create_project(self, name: str, home_folder: str, max_increments: int) -> ProjectRecord:
+    def create_project(self, name: str, home_folder: str) -> ProjectRecord:
         taken = {p.name for p in self._project_dirs()}
         slug = _unique_slug(_slugify(name), taken)
         _write_json(
             self._project_json_path(slug),
-            {"name": name, "home_folder": home_folder, "max_increments": max_increments},
+            {"name": name, "home_folder": home_folder},
         )
-        return ProjectRecord(name=name, home_folder=home_folder, max_increments=max_increments, slug=slug)
+        return ProjectRecord(name=name, home_folder=home_folder, slug=slug)
 
-    def update_project(self, name: str, new_name: str, home_folder: str, max_increments: int) -> ProjectRecord | None:
+    def update_project(self, name: str, new_name: str, home_folder: str) -> ProjectRecord | None:
         project = self.get_project(name)
         if project is None:
             return None
         _write_json(
             self._project_json_path(project.slug),
-            {"name": new_name, "home_folder": home_folder, "max_increments": max_increments},
+            {"name": new_name, "home_folder": home_folder},
         )
-        return ProjectRecord(name=new_name, home_folder=home_folder, max_increments=max_increments, slug=project.slug)
+        return ProjectRecord(name=new_name, home_folder=home_folder, slug=project.slug)
 
     def delete_project(self, name: str) -> None:
         """Soft-delete: moves the project's whole folder -- every
