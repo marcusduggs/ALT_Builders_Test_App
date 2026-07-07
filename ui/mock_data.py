@@ -10,8 +10,8 @@ mock_data.py for historical reasons -- this is where the UI-facing view
 models (Project/Increment/ComparisonResult) were first defined, back when
 everything here really was fake, and the UI modules already import from
 here by that name. Nothing in this file is mock data anymore: every method
-reads or writes real files under core.project_store.DEFAULT_DATA_DIR (or
-wherever the ProjectStore passed to MockDataStore is pointed).
+reads or writes real files under core.project_store.get_default_data_dir()
+(or wherever the ProjectStore passed to MockDataStore is pointed).
 """
 
 from __future__ import annotations
@@ -50,6 +50,15 @@ class Increment:
     # Report row shape: {approval_agency, index, description, total} --
     # static (doesn't depend on status.json), safe to compute once.
     report: list[dict] = field(default_factory=list)
+    # All Data's bottom totals row (see core.excel_reader.all_data_totals)
+    # -- {"Stage 1": ..., ..., "Stage 42": ..., "VCR": ..., "SUM": ...}.
+    # Safe to compute once and cache here, unlike Sum Data's totals:
+    # these are plain numeric column sums that never depend on
+    # status.json, so they can't go stale the way a precomputed Sum Data
+    # total could. Sum Data's totals row is instead recomputed fresh from
+    # this Increment's live sum_data every time it's rendered/exported --
+    # see core.excel_reader.live_sum_data_totals.
+    all_data_totals: dict = field(default_factory=dict)
 
     @property
     def needs_status_row_count(self) -> int:
@@ -512,6 +521,7 @@ class MockDataStore:
             all_data=rows,
             sum_data=sum_data_rows,
             report=report_rows,
+            all_data_totals=parsed["all_data_totals"],
         )
 
     def set_stage_status(self, project_name: str, increment_name: str, index: str, stage: int, status: str) -> None:

@@ -181,16 +181,19 @@ def main():
             failures.append("4: All Data header row should be bold")
         if ws_all.freeze_panes != "D2":
             failures.append(f"4: All Data should freeze header row + first 3 columns (D2), got {ws_all.freeze_panes}")
-        if ws_all.max_row - 1 != len(display2.all_data):
-            failures.append(f"4: All Data sheet should have one row per item ({ws_all.max_row - 1} vs {len(display2.all_data)})")
+        # +1 data rows for the bottom totals row (see core.excel_reader's
+        # all_data_totals/live_sum_data_totals and tests/test_totals_row.py
+        # for dedicated validation of that row's actual values).
+        if ws_all.max_row - 1 != len(display2.all_data) + 1:
+            failures.append(f"4: All Data sheet should have one row per item + 1 totals row ({ws_all.max_row - 1} vs {len(display2.all_data) + 1})")
 
         ws_sum = wb_out["Sum Data"]
         if not ws_sum["A1"].font.bold:
             failures.append("4: Sum Data header row should be bold")
         if ws_sum.freeze_panes != "D2":
             failures.append(f"4: Sum Data should freeze header row + first 3 columns (D2), got {ws_sum.freeze_panes}")
-        if ws_sum.max_row - 1 != len(display2.sum_data):
-            failures.append(f"4: Sum Data sheet should have one row per item ({ws_sum.max_row - 1} vs {len(display2.sum_data)})")
+        if ws_sum.max_row - 1 != len(display2.sum_data) + 1:
+            failures.append(f"4: Sum Data sheet should have one row per item + 1 totals row ({ws_sum.max_row - 1} vs {len(display2.sum_data) + 1})")
         if "% Complete" not in [c.value for c in ws_sum[1]]:
             failures.append("4: Sum Data sheet should have a % Complete column")
 
@@ -223,7 +226,7 @@ def main():
         print("=" * 70)
 
         for sheet_name, ws in (("All Data", ws_all), ("Sum Data", ws_sum)):
-            for r in range(2, ws.max_row + 1):
+            for r in range(2, ws.max_row):  # excludes the bottom totals row (blank Description, no wrap needed)
                 cell = ws.cell(row=r, column=excel_export.DESCRIPTION_COL)
                 if not cell.alignment.wrap_text:
                     failures.append(

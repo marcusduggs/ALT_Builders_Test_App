@@ -71,6 +71,7 @@ from PySide6.QtWidgets import (
 )
 
 from core import excel_export
+from core.excel_reader import live_sum_data_totals
 from ui.mock_data import STAGE_COUNT, Increment, MockDataStore
 from ui.widgets.frozen_table import FrozenTableView
 from ui.workers import run_with_progress
@@ -78,6 +79,7 @@ from ui.workers import run_with_progress
 FROZEN_COLUMNS = 3
 RECENTLY_ADDED_COLOR = QColor("#eaf7ee")
 FLASH_COLOR = QColor("#fff3b0")
+TOTALS_ROW_BACKGROUND = QColor("#e4e8f0")
 
 _STAGE_STATUS_COLORS = {
     "Done": QColor("#2e7d32"),
@@ -114,6 +116,22 @@ def _format_pct(done: int, total: int) -> str:
     if total == 0:
         return "—"
     return f"{round(100 * done / total)}%"
+
+
+def _totals_item(text: str) -> QStandardItem:
+    """One cell of the bottom totals row -- bold + tinted background so
+    it reads as a summary at a glance, not just another item; not
+    editable, and (since it's never wired to any click handler) not
+    interactive either.
+    """
+    item = QStandardItem(text)
+    item.setTextAlignment(Qt.AlignCenter)
+    item.setEditable(False)
+    item.setBackground(TOTALS_ROW_BACKGROUND)
+    font = item.font()
+    font.setBold(True)
+    item.setFont(font)
+    return item
 
 
 def _needs_status_icon() -> QIcon:
@@ -401,7 +419,8 @@ class DataViewPage(QWidget):
         headers += [f"Stage {i}" for i in range(1, STAGE_COUNT + 1)]
         headers += ["VCR", "SUM"]
 
-        model = QStandardItemModel(len(self.increment.all_data), len(headers))
+        item_count = len(self.increment.all_data)
+        model = QStandardItemModel(item_count + 1, len(headers))  # +1 for the totals row
         model.setHorizontalHeaderLabels(headers)
 
         for row_idx, row_data in enumerate(self.increment.all_data):
@@ -440,7 +459,9 @@ class DataViewPage(QWidget):
                 stage_item.setTextAlignment(Qt.AlignCenter)
                 items.append(stage_item)
 
-            vcr_item = QStandardItem("" if row_data.get("vcr") is None else str(row_data["vcr"]))
+            # Same "0, not blank" convention as non-required stage cells
+            # above -- matches the source file's own convention.
+            vcr_item = QStandardItem("0" if row_data.get("vcr") is None else str(row_data["vcr"]))
             vcr_item.setTextAlignment(Qt.AlignCenter)
             items.append(vcr_item)
 
@@ -454,6 +475,15 @@ class DataViewPage(QWidget):
                     item.setBackground(RECENTLY_ADDED_COLOR)
             for col_idx, item in enumerate(items):
                 model.setItem(row_idx, col_idx, item)
+
+        totals = self.increment.all_data_totals
+        totals_items = [_totals_item("Totals"), _totals_item(""), _totals_item("")]
+        for stage in range(1, STAGE_COUNT + 1):
+            totals_items.append(_totals_item(_format_total(totals.get(f"Stage {stage}", 0))))
+        totals_items.append(_totals_item(_format_total(totals.get("VCR", 0))))
+        totals_items.append(_totals_item(_format_total(totals.get("SUM", 0))))
+        for col_idx, item in enumerate(totals_items):
+            model.setItem(item_count, col_idx, item)
 
         table = FrozenTableView(frozen_columns=FROZEN_COLUMNS)
         table.setModel(model)
@@ -481,6 +511,9 @@ class DataViewPage(QWidget):
     # ------------------------------------------------------------------
     def _on_cell_clicked(self, model_index: QModelIndex):
         row, col = model_index.row(), model_index.column()
+        if row >= len(self.increment.all_data):
+            return  # the bottom totals row -- a summary, not a real item
+
         stage = col - FROZEN_COLUMNS + 1
         if not (1 <= stage <= STAGE_COUNT):
             return  # Index/Description/Agency/VCR/SUM -- not a stage cell
@@ -558,7 +591,7 @@ class DataViewPage(QWidget):
         headers += ["VCR", "Open", "Done", "Total", "% Complete"]
 
         rows = self.increment.sum_data
-        model = QStandardItemModel(len(rows), len(headers))
+        model = QStandardItemModel(len(rows) + 1, len(headers))  # +1 for the totals row
         model.setHorizontalHeaderLabels(headers)
 
         for row_idx, row_data in enumerate(rows):
@@ -615,6 +648,18 @@ class DataViewPage(QWidget):
                 item.setEditable(False)
             for col_idx, item in enumerate(items):
                 model.setItem(row_idx, col_idx, item)
+
+        totals = live_sum_data_totals(rows)
+        totals_items = [_totals_item("Totals"), _totals_item(""), _totals_item("")]
+        for stage in range(1, STAGE_COUNT + 1):
+            totals_items.append(_totals_item(str(totals["stage_open_counts"][stage])))
+        totals_items.append(_totals_item(str(totals["vcr_open_count"])))
+        totals_items.append(_totals_item(str(totals["open_total"])))
+        totals_items.append(_totals_item(str(totals["done_total"])))
+        totals_items.append(_totals_item(str(totals["grand_total"])))
+        totals_items.append(_totals_item(_format_pct(totals["done_total"], totals["grand_total"])))
+        for col_idx, item in enumerate(totals_items):
+            model.setItem(len(rows), col_idx, item)
 
         table = FrozenTableView(frozen_columns=FROZEN_COLUMNS)
         table.setModel(model)

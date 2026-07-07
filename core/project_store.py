@@ -5,9 +5,11 @@ zero-setup local tool. Every uploaded file is kept forever (versioned,
 never overwritten), so there's always an audit trail of exactly what the
 state sent and when.
 
-Default data directory: ~/AltamiranoBuildersAppData (auto-migrated in
-place from ~/SubmissionAppData -- this project's old working name -- if
-found; see _migrate_legacy_data_dir())
+Default data directory: wherever the user configured via the first-launch
+picker or Settings > Change Data Location (see core/app_config.py) --
+falling back to ~/AltamiranoBuildersAppData (auto-migrated in place from
+~/SubmissionAppData -- this project's old working name -- if found; see
+get_default_data_dir() below) if nothing has been configured yet.
 
 Layout:
 
@@ -40,15 +42,25 @@ Layout:
                                             instead of removing it -- manual
                                             recovery only, no restore UI
 
-A project's or increment's "slug" (its folder name) is generated once, from
-its name, at creation time, and never changes afterward -- update_project()
-only rewrites project.json's "name" field, not the folder. Coupling a
-stable-forever filesystem path to a display name a user can freely edit is
-exactly the identity-vs-position confusion this codebase has deliberately
-avoided elsewhere (see core/excel_reader.py's "PARSING STRATEGY" section).
-Every list/get/update call matches on the display name stored *inside*
-project.json / increment.json, never on the slug -- callers never see or
-need to know slugs exist.
+An increment's slug (its folder name) is generated once, from its name, at
+creation time, and never changes afterward. Coupling a stable-forever
+filesystem path to a display name a user can freely edit is exactly the
+identity-vs-position confusion this codebase has deliberately avoided
+elsewhere (see core/excel_reader.py's "PARSING STRATEGY" section).
+
+A PROJECT's slug is the one deliberate exception: since Home Folder is a
+live, user-visible path computed from the slug (<base_dir>/projects/<slug>/,
+see the module docstring above), update_project() renaming the folder to
+match a new name is exactly what keeps that display honest -- a project
+whose folder still read like its pre-rename name would look broken, not
+reassuring. Uses the exact same _unique_slug() collision strategy
+create_project() uses (excluding the project's OWN current slug from the
+"taken" set, so renaming to a name that still slugifies the same is a
+no-op, not a spurious collision against itself); skips the filesystem
+rename entirely when the new slug equals the old one. Every list/get/update
+call still matches on the display name stored *inside* project.json /
+increment.json, never on the slug -- callers never see or need to know
+slugs exist, this is purely an internal consequence of the rename.
 """
 
 from __future__ import annotations
@@ -61,29 +73,60 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-LEGACY_DATA_DIR_NAME = "SubmissionAppData"  # this project's old working name
-DATA_DIR_NAME = "AltamiranoBuildersAppData"
-DEFAULT_DATA_DIR = Path.home() / DATA_DIR_NAME
+from core import app_config
+
 DELETED_DIRNAME = "_deleted"
 
 
-def _migrate_legacy_data_dir() -> None:
-    """One-time migration: if ~/SubmissionAppData (the old name) still
-    exists and ~/AltamiranoBuildersAppData (the new one) doesn't yet,
-    rename the folder in place -- same parent directory, so this is an
-    instant filesystem rename, not a copy, and every project/increment/
-    status file underneath it moves untouched along with it.
+def _migrate_legacy_data_dir(target_dir: Path, home_dir: Path | None = None) -> None:
+    """One-time migration: if ~/SubmissionAppData (this project's old
+    working name, from before it even had an AltamiranoBuildersAppData
+    default, let alone a configurable location) still exists and
+    target_dir doesn't yet, rename the folder in place -- same parent
+    directory, so this is an instant filesystem rename, not a copy, and
+    every project/increment/status file underneath it moves untouched
+    along with it.
 
-    If the new folder already exists, this does nothing at all: never
+    If target_dir already exists, this does nothing at all: never
     merges, never deletes -- there's no path by which existing data
     could be lost to an edge case here. Safe to call on every startup:
-    idempotent, since the second call onward always finds the new
-    folder already in place and no-ops.
+    idempotent, since the second call onward always finds target_dir
+    already in place and no-ops. Only ever called with
+    app_config.default_data_dir_suggestion() as target_dir -- this is
+    strictly about that historical hardcoded location, not wherever the
+    user might have since configured (see get_default_data_dir()).
+
+    home_dir defaults to the real Path.home() in production; tests pass
+    an explicit temp dir instead so this never resolves to (let alone
+    touches) a real user's actual home directory.
     """
-    legacy_dir = Path.home() / LEGACY_DATA_DIR_NAME
-    if legacy_dir.exists() and not DEFAULT_DATA_DIR.exists():
-        legacy_dir.rename(DEFAULT_DATA_DIR)
-        print(f"Migrated existing data from {LEGACY_DATA_DIR_NAME} to {DATA_DIR_NAME}")
+    legacy_dir = (home_dir or Path.home()) / app_config.LEGACY_DATA_DIR_NAME
+    if legacy_dir.exists() and not target_dir.exists():
+        legacy_dir.rename(target_dir)
+        print(f"Migrated existing data from {app_config.LEGACY_DATA_DIR_NAME} to {target_dir}")
+
+
+def get_default_data_dir(config_path: Path | None = None, home_dir: Path | None = None) -> Path:
+    """The data folder ProjectStore() uses when no base_dir is given --
+    whatever the user configured via the first-launch picker or Settings
+    > Change Data Location (core.app_config.read_configured_data_dir()),
+    or the historical hardcoded ~/AltamiranoBuildersAppData location
+    (running the legacy SubmissionAppData migration first) for any
+    caller that constructs a ProjectStore before that config exists --
+    real app startup always writes it first, via ui/app.py's
+    first-launch check, so this fallback only matters for other/direct
+    callers (a script, for instance).
+
+    config_path/home_dir are production no-ops (both default to the
+    real config file / real Path.home()) -- present purely so tests can
+    override BOTH and never resolve, let alone touch, anything real.
+    """
+    configured = app_config.read_configured_data_dir(config_path)
+    if configured is not None:
+        return configured
+    suggestion = app_config.default_data_dir_suggestion(home_dir)
+    _migrate_legacy_data_dir(suggestion, home_dir)
+    return suggestion
 
 
 @dataclass
@@ -148,15 +191,19 @@ class ProjectStore:
     volumes; correctness and simplicity win over speed here.
     """
 
-    def __init__(self, base_dir: str | Path = DEFAULT_DATA_DIR):
-        self.base_dir = Path(base_dir)
-        # Only when using the real default location -- never for a
-        # caller-supplied base_dir (every test in this repo passes its
-        # own temp dir specifically so it never touches the real
-        # ~/AltamiranoBuildersAppData, and migrating some unrelated temp
-        # dir would make no sense anyway).
-        if self.base_dir == DEFAULT_DATA_DIR:
-            _migrate_legacy_data_dir()
+    def __init__(self, base_dir: str | Path | None = None):
+        # base_dir=None (not a frozen default-parameter value) so this
+        # re-resolves get_default_data_dir() -- and therefore whatever's
+        # CURRENTLY configured -- on every construction, rather than
+        # freezing whatever was configured at import time. Matters
+        # concretely after Settings > Change Data Location: the app
+        # constructs a fresh ProjectStore() to pick up the new location
+        # without a restart (see ui/pages/home_page.py).
+        #
+        # Every test in this repo passes its own explicit temp base_dir,
+        # so it never resolves the default and never touches the real
+        # configured/fallback location.
+        self.base_dir = Path(base_dir) if base_dir is not None else get_default_data_dir()
         self.projects_dir = self.base_dir / "projects"
         self.projects_dir.mkdir(parents=True, exist_ok=True)
 
@@ -204,11 +251,29 @@ class ProjectStore:
         return ProjectRecord(name=name, home_folder=str(self._project_dir_path(slug)), slug=slug)
 
     def update_project(self, name: str, new_name: str) -> ProjectRecord | None:
+        """Renaming also renames the project's folder to match, so Home
+        Folder (a live path computed from the slug) never shows a stale
+        pre-rename name -- see the module docstring's "PROJECT's slug is
+        the one deliberate exception" note. Same _unique_slug() collision
+        strategy create_project() uses, with the project's OWN current
+        slug excluded from the "taken" set (so a rename that still
+        slugifies the same is a no-op, not a spurious self-collision).
+        Path.rename() moves the whole directory tree in one atomic,
+        same-filesystem operation -- every increment subfolder, version
+        file, and status.json underneath moves with it automatically.
+        """
         project = self.get_project(name)
         if project is None:
             return None
-        _write_json(self._project_json_path(project.slug), {"name": new_name})
-        return ProjectRecord(name=new_name, home_folder=str(self._project_dir_path(project.slug)), slug=project.slug)
+
+        taken = {p.name for p in self._project_dirs() if p.name != project.slug}
+        new_slug = _unique_slug(_slugify(new_name), taken)
+
+        if new_slug != project.slug:
+            self._project_dir_path(project.slug).rename(self._project_dir_path(new_slug))
+
+        _write_json(self._project_json_path(new_slug), {"name": new_name})
+        return ProjectRecord(name=new_name, home_folder=str(self._project_dir_path(new_slug)), slug=new_slug)
 
     def delete_project(self, name: str) -> None:
         """Soft-delete: moves the project's whole folder -- every

@@ -169,6 +169,38 @@ QFrame#reviewHeader QLabel#reviewSubtitle {
     color: #b9cbe0;
 }
 
+/* ---------- hamburger menu ---------- */
+/* Without explicit color rules here, QMenu falls back to the OS's own
+   (dark, on this machine) popup background combined with this
+   stylesheet's global `* { color: #1f2430 }` (a dark text color meant
+   for light backgrounds) -- dark-on-dark, unreadable. Reuses the same
+   dark-bg/light-text pairing as #footerBar (#12151c / #e8eaf0) rather
+   than inventing a new palette. */
+QMenu {
+    background: #12151c;
+    border: 1px solid #2a2f3a;
+    color: #e8eaf0;
+    padding: 4px;
+}
+QMenu::item {
+    background: transparent;
+    color: #e8eaf0;
+    padding: 6px 24px 6px 12px;
+    border-radius: 4px;
+}
+QMenu::item:selected {
+    background: #2f6fed;
+    color: #ffffff;
+}
+QMenu::item:disabled {
+    color: #6b7280;
+}
+QMenu::separator {
+    height: 1px;
+    background: #2a2f3a;
+    margin: 4px 8px;
+}
+
 QFrame#changeSectionAdded {
     background: #eaf7ee;
     border: 1px solid #b7e3c3;

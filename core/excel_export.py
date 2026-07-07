@@ -33,7 +33,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from core.excel_reader import STAGE_COUNT
+from core.excel_reader import STAGE_COUNT, live_sum_data_totals
 
 _STAGE_MARKS = {"Done": "X", "Open": "1"}
 _STAGE_FILLS = {
@@ -61,6 +61,12 @@ _SUM_DATA_STAGE_FONTS = {
 _HEADER_FONT = Font(bold=True)
 _BOLD_FONT = Font(bold=True)
 _DESCRIPTION_ALIGNMENT = Alignment(wrap_text=True, vertical="top")
+
+# Bottom totals row -- bold + a subtle tint, matching
+# ui.pages.data_view_page's TOTALS_ROW_BACKGROUND exactly (#e4e8f0) so
+# the export reads the same way the in-app tables do.
+_TOTALS_FILL = PatternFill(start_color="FFE4E8F0", end_color="FFE4E8F0", fill_type="solid")
+_TOTALS_FONT = Font(bold=True)
 
 INDEX_COL = 1
 DESCRIPTION_COL = 2
@@ -135,7 +141,22 @@ def _write_sum_data_stage_cell(ws: Worksheet, excel_row: int, stage: int, status
     cell.alignment = _STAGE_ALIGNMENT
 
 
-def _write_all_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
+def _write_totals_row(ws: Worksheet, values: list[Any]) -> None:
+    """Appends a bold, tinted summary row -- not a real item, so it's
+    deliberately styled to stand apart from the data rows above it (see
+    module docstring for where these totals come from and why All
+    Data's are safe to compute once while Sum Data's are recomputed live
+    on every export).
+    """
+    ws.append(values)
+    for cell in ws[ws.max_row]:
+        cell.font = _TOTALS_FONT
+        cell.fill = _TOTALS_FILL
+        if cell.column > DESCRIPTION_COL:
+            cell.alignment = _STAGE_ALIGNMENT
+
+
+def _write_all_data_sheet(ws: Worksheet, rows: list[dict[str, Any]], totals: dict[str, Any]) -> None:
     headers = ["Index", "Description", "Approval Agency"] + _stage_headers() + ["VCR", "SUM"]
     _write_header(ws, headers)
 
@@ -155,7 +176,9 @@ def _write_all_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
                 # core.excel_reader.build_all_data(), which already
                 # stores 0 here) -- a genuine numeric 0, not blank.
                 values.append(0)
-        values.append(row_data.get("vcr"))
+        # Same "0, not blank" convention as non-required stage cells above.
+        vcr = row_data.get("vcr")
+        values.append(0 if vcr is None else vcr)
         values.append(row_data.get("sum"))
         ws.append(values)
 
@@ -166,6 +189,13 @@ def _write_all_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
         for stage in range(1, STAGE_COUNT + 1):
             if stage not in required:
                 ws.cell(row=excel_row, column=STAGE_FIRST_COL + stage - 1).alignment = _STAGE_ALIGNMENT
+
+    totals_values = ["Totals", "", ""]
+    for stage in range(1, STAGE_COUNT + 1):
+        totals_values.append(totals.get(f"Stage {stage}", 0))
+    totals_values.append(totals.get("VCR", 0))
+    totals_values.append(totals.get("SUM", 0))
+    _write_totals_row(ws, totals_values)
 
     vcr_col = STAGE_LAST_COL + 1
     sum_col = vcr_col + 1
@@ -221,6 +251,23 @@ def _write_sum_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
     done_col = vcr_col + 2
     total_col = vcr_col + 3
     pct_col = vcr_col + 4
+
+    # Live totals -- recomputed from these SAME rows every export (see
+    # core.excel_reader.live_sum_data_totals), never cached, so this
+    # never goes stale relative to the individual rows just written above.
+    totals = live_sum_data_totals(rows)
+    totals_values = ["Totals", "", ""]
+    for stage in range(1, STAGE_COUNT + 1):
+        totals_values.append(totals["stage_open_counts"][stage])
+    totals_values.append(totals["vcr_open_count"])
+    totals_values.append(totals["open_total"])
+    totals_values.append(totals["done_total"])
+    totals_values.append(totals["grand_total"])
+    totals_values.append(totals["pct_complete"])
+    _write_totals_row(ws, totals_values)
+    if totals["pct_complete"] is not None:
+        ws.cell(row=ws.max_row, column=pct_col).number_format = "0%"
+
     _set_common_column_widths(ws, {vcr_col: 9, open_col: 9, done_col: 9, total_col: 9, pct_col: 12})
     ws.freeze_panes = ws.cell(row=2, column=STAGE_FIRST_COL).coordinate
 
@@ -262,7 +309,7 @@ def export_increment(increment: Any, path: str) -> None:
     wb = openpyxl.Workbook()
     ws_all_data = wb.active
     ws_all_data.title = "All Data"
-    _write_all_data_sheet(ws_all_data, increment.all_data)
+    _write_all_data_sheet(ws_all_data, increment.all_data, increment.all_data_totals)
 
     ws_sum_data = wb.create_sheet("Sum Data")
     _write_sum_data_sheet(ws_sum_data, increment.sum_data)

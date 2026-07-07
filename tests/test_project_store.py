@@ -48,16 +48,82 @@ def main():
         if original is None or original.home_folder != expected_home_folder:
             failures.append(f"get_project mismatch: {original}, expected home_folder {expected_home_folder!r}")
 
+        # give Wing A a real increment+file+status BEFORE renaming, so the
+        # rename test below can confirm they survive the folder move intact
+        wing_a_file = _make_fake_file(scratch, "wing-a-v1.xlsm")
+        store.create_increment("Test Hospital - Wing A", "INC 1 - Wing A Foundation", wing_a_file)
+        store.save_status("Test Hospital - Wing A", "INC 1 - Wing A Foundation", {"B-C1": {5: "Done"}})
+        old_slug = original.slug
+        old_project_dir = store.projects_dir / old_slug
+
         store.update_project("Test Hospital - Wing A", "Test Hospital - Wing A (Renamed)")
         renamed = store.get_project("Test Hospital - Wing A (Renamed)")
-        # renaming must NOT change the slug, so home_folder (derived from
-        # slug) must be identical before and after the rename
-        if renamed is None or renamed.home_folder != expected_home_folder:
-            failures.append(f"update_project mismatch: {renamed}, expected home_folder {expected_home_folder!r}")
+        # Home Folder is a live, user-visible path -- renaming MUST move
+        # the folder to match, not leave it pointing at the pre-rename slug.
+        if renamed is None:
+            failures.append("update_project: renamed project should be resolvable by its new name")
+        else:
+            if renamed.slug == old_slug:
+                failures.append(f"update_project should change the slug/folder to match the new name, still {old_slug!r}")
+            if renamed.home_folder != str(store.projects_dir / renamed.slug):
+                failures.append(f"update_project: home_folder should reflect the NEW slug, got {renamed.home_folder!r}")
+            if old_project_dir.exists():
+                failures.append(f"update_project should have moved the old folder, but {old_project_dir} still exists")
         if store.get_project("Test Hospital - Wing A") is not None:
             failures.append("update_project should make the old name unresolvable")
-        if renamed is not None and original is not None and renamed.slug != original.slug:
-            failures.append("update_project must not change the project's slug/folder")
+
+        # the increment/file/status created under the OLD slug must still
+        # be reachable under the new name -- Path.rename() moves the whole
+        # tree, nothing should be orphaned
+        moved_increments = store.list_increments("Test Hospital - Wing A (Renamed)")
+        if [i.name for i in moved_increments] != ["INC 1 - Wing A Foundation"]:
+            failures.append(f"increment should survive the project rename intact, got {moved_increments}")
+        moved_status = store.load_status("Test Hospital - Wing A (Renamed)", "INC 1 - Wing A Foundation")
+        if moved_status != {"B-C1": {5: "Done"}}:
+            failures.append(f"status.json should survive the project rename intact, got {moved_status}")
+        moved_versions = store.list_version_files("Test Hospital - Wing A (Renamed)", "INC 1 - Wing A Foundation")
+        if len(moved_versions) != 1 or not moved_versions[0].exists():
+            failures.append(f"version file should survive the project rename intact, got {moved_versions}")
+
+        # renaming to a name that slugifies IDENTICALLY (punctuation only)
+        # must be a no-op on the folder -- same slug, no actual move. Uses
+        # a separate, dedicated project (not Wing A) so it doesn't disturb
+        # Wing A's name for the increment/version-history section below.
+        store.create_project("No-Op Rename Test")
+        no_op_before = store.get_project("No-Op Rename Test")
+        store.update_project("No-Op Rename Test", "No-Op Rename Test!!!")
+        no_op_after = store.get_project("No-Op Rename Test!!!")
+        if no_op_after is None or no_op_after.slug != no_op_before.slug:
+            failures.append(
+                f"renaming to a name with the same slug should keep the same slug/folder, "
+                f"got {no_op_after.slug if no_op_after else None!r} vs {no_op_before.slug!r}"
+            )
+
+        # --- collision: renaming into another EXISTING project's slug ---
+        store.create_project("Zeta Clinic")
+        store.create_project("Zeta Clinic Collision Source")
+        zeta = store.get_project("Zeta Clinic")
+        store.update_project("Zeta Clinic Collision Source", "Zeta Clinic")
+        renamed_to_zeta = next(
+            (p for p in store.list_projects() if p.slug != zeta.slug and p.slug.startswith("zeta-clinic")), None
+        )
+        if renamed_to_zeta is None:
+            failures.append(
+                "renaming into a name that collides with another project's slug should suffix "
+                "(e.g. zeta-clinic-2), not silently merge"
+            )
+        if not (store.projects_dir / zeta.slug).exists():
+            failures.append("the ORIGINAL 'Zeta Clinic' project's folder must be untouched by the colliding rename")
+
+        # clean up this section's throwaway projects/increment so the
+        # project-count and increment-list assertions further down (which
+        # predate this rename test and assume a minimal, unrelated set of
+        # projects/increments) aren't disturbed by it
+        store.delete_project("No-Op Rename Test!!!")
+        store.delete_project("Zeta Clinic")
+        if renamed_to_zeta is not None:
+            store.delete_project(renamed_to_zeta.name)
+        store.delete_increment("Test Hospital - Wing A (Renamed)", "INC 1 - Wing A Foundation")
 
         wing_b = store.get_project("Test Hospital - Wing B")
         wing_b_slug = wing_b.slug

@@ -8,8 +8,8 @@ from __future__ import annotations
 import logging
 from functools import partial
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QUrl, Qt
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -18,19 +18,25 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from core import update_check
+from core.app_version import APP_VERSION
 from core.increment_matcher import MatchType
+from core.update_check import UpdateStatus
+from ui.dialogs.about_dialog import AboutDialog
 from ui.dialogs.project_dialog import ProjectDialog
 from ui.dialogs.review_dialog import ReviewDialog
 from ui.mock_data import MockDataStore
-from ui.paths import get_asset_path
+from ui.paths import get_asset_path, get_bundled_path
 from ui.workers import run_with_progress
 
 logger = logging.getLogger(__name__)
@@ -63,6 +69,9 @@ class HomePage(QWidget):
         layout = QHBoxLayout(frame)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(12)
+
+        layout.addWidget(self._build_hamburger_button())
+        layout.addSpacing(8)
 
         logo_label = self._build_logo_label()
         if logo_label is not None:
@@ -109,6 +118,97 @@ class HomePage(QWidget):
             pixmap.scaledToHeight(LOGO_HEIGHT_PX, Qt.SmoothTransformation)
         )
         return label
+
+    # ------------------------------------------------------------------
+    # hamburger menu: About / Help / Check for Updates / Exit
+    # ------------------------------------------------------------------
+    def _build_hamburger_button(self) -> QToolButton:
+        button = QToolButton()
+        button.setText("☰")
+        button.setToolTip("Menu")
+        button.setPopupMode(QToolButton.InstantPopup)
+        button.setAutoRaise(True)
+
+        menu = QMenu(button)
+        menu.addAction("About", self._on_about)
+        menu.addAction("Help", self._on_help)
+        menu.addSeparator()
+        menu.addAction("Check for Updates", self._on_check_for_updates)
+        menu.addSeparator()
+        menu.addAction("Exit", self._on_exit)
+        button.setMenu(menu)
+        return button
+
+    def _on_about(self):
+        AboutDialog(parent=self).exec()
+
+    def _on_help(self):
+        """Opens assets/user_guide.pdf in the OS's own default PDF viewer
+        -- not embedded in-app -- same bundled-resource resolution
+        logo.png/style.qss already use (get_bundled_path(), which
+        resolves correctly whether running as a script or a frozen
+        PyInstaller build -- see ui/paths.py).
+        """
+        pdf_path = get_bundled_path("assets", "user_guide.pdf")
+        if not pdf_path.exists():
+            QMessageBox.warning(
+                self, "Help File Not Found", f"The help file couldn't be found at:\n\n{pdf_path}"
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(pdf_path)))
+
+    def _on_check_for_updates(self):
+        """Option A: a manual check that opens a browser link, never an
+        automatic in-place update. Runs on a background thread (same
+        run_with_progress pattern as every other slow call in this app,
+        even though a GitHub API call is normally fast) so a slow/stalled
+        connection never freezes the UI.
+        """
+        run_with_progress(
+            self, "Checking for updates...", update_check.check_for_update,
+            self._on_update_check_finished, self._on_update_check_error,
+        )
+
+    def _on_update_check_finished(self, result):
+        if result.status is UpdateStatus.UPDATE_AVAILABLE:
+            self._show_update_available_dialog(result)
+        elif result.status is UpdateStatus.UP_TO_DATE:
+            QMessageBox.information(self, "Up to Date", f"You're on the latest version (v{APP_VERSION}).")
+        else:  # CHECK_FAILED -- deliberately low-key, not an error dialog (see core/update_check.py)
+            QMessageBox.information(
+                self, "Update Check", "Couldn't check for updates right now. Try again later."
+            )
+
+    def _on_update_check_error(self, _exc: Exception):
+        # check_for_update() is designed to never raise (see its
+        # docstring) -- this exists only as the same non-alarming
+        # fallback in case something truly unexpected still slips
+        # through run_with_progress's error path.
+        QMessageBox.information(self, "Update Check", "Couldn't check for updates right now. Try again later.")
+
+    def _show_update_available_dialog(self, result):
+        version_label = f"v{result.latest_version}, pre-release" if result.is_prerelease else f"v{result.latest_version}"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("Update Available")
+        box.setText(
+            f"A new version ({version_label}) is available. You're currently on v{APP_VERSION}."
+        )
+        download_button = box.addButton("Download", QMessageBox.AcceptRole)
+        box.addButton("Later", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is download_button:
+            # The release PAGE (has context: notes, assets, etc.), not a
+            # raw asset link -- Rey should land somewhere with context,
+            # not a bare file download.
+            QDesktopServices.openUrl(QUrl(result.release_url))
+
+    def _on_exit(self):
+        # Closes the top-level window exactly as clicking its own close
+        # button would -- goes through the normal Qt close event rather
+        # than bypassing it with QApplication.quit(), so any cleanup a
+        # closeEvent might do in the future still runs.
+        self.window().close()
 
     def _refresh_project_combo(self, select_name: str | None = None):
         self.project_combo.blockSignals(True)

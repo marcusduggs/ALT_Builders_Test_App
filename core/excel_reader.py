@@ -804,13 +804,139 @@ def normalize_workbook(path: Any) -> dict[str, pd.DataFrame]:
     records = parsed["records"]
     inc_label = parsed["project_info"]["record_name"]
 
+    all_data_df = build_all_data(records, inc_label)
+    sum_data_df = build_sum_data(records, inc_label)
+
     return {
-        "all_data": build_all_data(records, inc_label),
-        "sum_data": build_sum_data(records, inc_label),
+        "all_data": all_data_df,
+        "sum_data": sum_data_df,
         "report": build_report(records),
         "project_info": parsed["project_info"],
         "fill_status": fill_status_by_index(records),
         "raw_status": raw_status_by_index(records),
+        "all_data_totals": all_data_totals(all_data_df),
+        "sum_data_totals": sum_data_totals(sum_data_df),
+    }
+
+
+def _numeric_column_sum(series: pd.Series) -> float:
+    """Excel's own SUM() semantics -- adds numeric cells, silently skips
+    text ones (e.g. "X" markers). BlueSheetRecord.sum_value already
+    applies this same rule per row; this applies it per column, matching
+    the real source file's own bottom-row =SUM(colX3:colX_last) formulas
+    exactly (confirmed against sample_increment.xlsm's cached values).
+
+    Explicitly excludes NaN despite it technically satisfying
+    isinstance(v, float): a Stage/VCR column mixing grid-sheet rows
+    (0-filled) with F-Cons Verif rows (genuinely None -- see
+    build_all_data()'s docstring) gets upcast by pandas to float64,
+    coercing those Nones to NaN -- the exact same coercion
+    required_stages_by_index() already has to guard against for a
+    different column. Without this check, Python's sum() silently
+    returns NaN for the WHOLE column the moment a single NaN is in it,
+    since any arithmetic involving NaN propagates NaN.
+    """
+    return sum(v for v in series if isinstance(v, (int, float)) and not isinstance(v, bool) and not pd.isna(v))
+
+
+def all_data_totals(all_data: pd.DataFrame) -> dict[str, float]:
+    """All Data's bottom totals row: a plain numeric sum of every Stage/
+    VCR/SUM column, matching the real file's own formulas exactly (see
+    module usage in normalize_workbook()).
+
+    Unlike Sum Data's totals (see sum_data_totals() and
+    live_sum_data_totals() below), these never depend on live
+    status.json state -- a stage's raw numeric value doesn't change when
+    its Done/Open status is toggled -- so this single, file-derived
+    computation is correct wherever it's used (in-app and export), with
+    no live variant needed.
+    """
+    totals: dict[str, float] = {}
+    for stage in range(1, STAGE_COUNT + 1):
+        totals[f"Stage {stage}"] = _numeric_column_sum(all_data[f"Stage {stage}"])
+    totals["VCR"] = _numeric_column_sum(all_data["VCR"])
+    totals["SUM"] = _numeric_column_sum(all_data["SUM"])
+    return totals
+
+
+def sum_data_totals(sum_data: pd.DataFrame) -> dict[str, Any]:
+    """Sum Data's bottom totals row, computed straight from the RAW
+    file-derived Sum Data DataFrame: COUNTIF(colX,"*Open*") per Stage/VCR
+    column, plus SUM() of the per-row Open/Done/Total columns, plus
+    overall % Complete = Done total / Total total -- matching the real
+    file's own bottom-row formulas exactly (see module usage in
+    normalize_workbook(), and the module docstring... see this
+    function's callers for the exact formulas this replicates).
+
+    This reflects the FILE's own raw Done/Open status
+    (build_sum_data()'s _status() classification), not any live
+    status.json override -- correct immediately after a fresh upload
+    (status.json is seeded directly from this same raw classification on
+    first upload -- see core.status_tracker), but NOT what the app
+    actually displays/exports after a manual status edit. See
+    live_sum_data_totals() for the version that stays correct then --
+    that is the one ui.pages.data_view_page and core.excel_export
+    actually use; this one is normalize_workbook()'s own file-level
+    artifact.
+    """
+    totals: dict[str, Any] = {}
+    for stage in range(1, STAGE_COUNT + 1):
+        totals[f"Stage {stage}"] = int((sum_data[f"Stage {stage}"] == "Open").sum())
+    totals["VCR"] = int((sum_data["VCR"] == "Open").sum())
+    open_total = int(sum_data["Open"].sum())
+    done_total = int(sum_data["Done"].sum())
+    grand_total = int(sum_data["Total"].sum())
+    totals["open_total"] = open_total
+    totals["done_total"] = done_total
+    totals["grand_total"] = grand_total
+    totals["pct_complete"] = (done_total / grand_total) if grand_total else None
+    return totals
+
+
+def live_sum_data_totals(rows: list[dict]) -> dict[str, Any]:
+    """The Sum Data totals row actually rendered in-app and exported --
+    computed from the SAME live (required_stages, status.json-backed
+    stage_status) data every individual Sum Data row already renders
+    from (ui.mock_data.Increment.sum_data), so it can never go stale
+    relative to what's on screen after a manual status edit. Recomputed
+    fresh by every caller (the Sum Data tab on every render, the Excel
+    export on every export) -- never cached.
+
+    Mirrors sum_data_totals()'s formulas conceptually (per-stage Open
+    count, VCR Open count, Open/Done/Total sums, overall % Complete) but
+    walking live row dicts instead of the static, file-derived
+    DataFrame. Equal to sum_data_totals() immediately after a fresh
+    upload, since status.json is seeded directly from the file's own raw
+    status at that point -- see core.status_tracker.
+    """
+    stage_open_counts = {stage: 0 for stage in range(1, STAGE_COUNT + 1)}
+    vcr_open_count = 0
+    open_total = 0
+    done_total = 0
+    for row in rows:
+        required = row.get("required_stages", [])
+        stage_status = row.get("stage_status", {})
+        for stage in required:
+            status = stage_status.get(stage, "Open")
+            if status == "Done":
+                done_total += 1
+            else:
+                stage_open_counts[stage] += 1
+                open_total += 1
+        vcr_status = _status(row.get("vcr"))
+        if vcr_status == "Done":
+            done_total += 1
+        elif vcr_status == "Open":
+            vcr_open_count += 1
+            open_total += 1
+    grand_total = open_total + done_total
+    return {
+        "stage_open_counts": stage_open_counts,
+        "vcr_open_count": vcr_open_count,
+        "open_total": open_total,
+        "done_total": done_total,
+        "grand_total": grand_total,
+        "pct_complete": (done_total / grand_total) if grand_total else None,
     }
 
 
