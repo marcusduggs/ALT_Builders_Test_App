@@ -1,0 +1,89 @@
+name: Release
+
+# Deliberately separate from build-windows-exe.yml, which stays
+# untouched and keeps building on every push to main for iterative
+# dev/testing. This workflow only fires on a real release tag
+# (vX.Y.Z -- e.g. v0.8.0), and is the ONLY place a released .exe's
+# APP_VERSION ever comes from.
+#
+# v[0-9]+.[0-9]+.[0-9]+ deliberately does NOT match the repo's old
+# stray-dot tag format (v.0.7.0, v.0.6.0, v.0.5.0) -- those were never
+# renamed (a destructive, public-history change we chose not to make),
+# but no NEW tag can repeat that typo, since it simply won't trigger
+# this workflow at all.
+on:
+  push:
+    tags:
+      - v[0-9]+.[0-9]+.[0-9]+
+
+permissions:
+  contents: write   # required for `gh release create` below -- see
+                    # release-prep notes for what to check if this
+                    # errors out with a permissions failure
+
+jobs:
+  release:
+    runs-on: windows-latest   # macos-13 excluded: reliably stuck in GitHub's
+                              # runner queue (seen throughout this project's
+                              # history), and no Mac build has ever actually
+                              # been released -- only Windows ships today.
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Stamps APP_VERSION from the pushed tag itself, in THIS CI
+      # workspace only -- never committed back to the repo. This is the
+      # exact fix for the bug that shipped v0.7.0 with the About dialog
+      # still reading 0.6.0: there is no longer a hand-maintained
+      # constant that can drift from the tag, because the tag IS the
+      # source of truth, applied immediately before packaging.
+      - name: Stamp APP_VERSION from the release tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        shell: python
+        run: |
+          import os, re, pathlib
+          version = os.environ["TAG_NAME"].lstrip("v")
+          path = pathlib.Path("core/app_version.py")
+          text = path.read_text()
+          new_text, count = re.subn(r'APP_VERSION = ".*"', f'APP_VERSION = "{version}"', text, count=1)
+          if count != 1:
+              raise SystemExit(f"Expected exactly one APP_VERSION assignment in {path}, found {count}")
+          path.write_text(new_text)
+          print(f"Stamped APP_VERSION = {version!r} for this build")
+
+      - name: Build executable (Windows)
+        run: pyinstaller --onefile --windowed --name AltamiranoBuildersAPP --add-data "assets;assets" --add-data "ui/style.qss;ui" run_app.py
+
+      # Reuses CHANGELOG_SUMMARY (core/app_version.py) as the release
+      # body verbatim -- the SAME text the About dialog shows -- so
+      # release notes and the in-app changelog can never drift apart
+      # from each other.
+      - name: Extract changelog for the release body
+        shell: python
+        run: |
+          from core.app_version import CHANGELOG_SUMMARY
+          from pathlib import Path
+          Path("release_notes.txt").write_text(CHANGELOG_SUMMARY)
+
+      # prerelease is intentionally hardcoded true -- promotion to a
+      # real release stays a manual, deliberate step after real Windows
+      # verification, not something this workflow decides on its own.
+      - name: Create GitHub Release and attach the artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            "dist/AltamiranoBuildersAPP.exe" `
+            --title "Altamirano Builders App ${{ github.ref_name }}" `
+            --notes-file release_notes.txt `
+            --prerelease

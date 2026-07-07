@@ -17,7 +17,6 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import update_check
-from core.app_version import APP_VERSION
 from core.update_check import RELEASES_LIST_API_URL, UpdateStatus, _compare_versions, _parse_version, check_for_update
 
 
@@ -168,24 +167,36 @@ def main():
 
     # ------------------------------------------------------------
     # 5 -- UP_TO_DATE (every release in the list is <= current version)
+    #
+    # core/app_version.py's checked-in APP_VERSION is now a deliberate
+    # "0.0.0-dev" placeholder (see .github/workflows/release.yml -- a
+    # released build's real version only ever comes from the tag,
+    # stamped at build time), so it parses as (0, 0, 0) and is NOT a
+    # realistic "current version" to compare against here. Patching
+    # core.update_check.APP_VERSION directly (the name as imported INTO
+    # that module, not core.app_version.APP_VERSION itself -- patch
+    # where a name is USED, not where it's defined) with a fixed,
+    # realistic value keeps this test meaningful regardless of what the
+    # dev placeholder happens to be.
     # ------------------------------------------------------------
     print("\n" + "=" * 70)
     print("5 -- check_for_update(): UP_TO_DATE")
     print("=" * 70)
 
-    same_version_list = [_release(f"v{APP_VERSION}"), _release("v0.0.1")]
-    with patch("urllib.request.urlopen", return_value=_mock_response(same_version_list)):
-        result2 = check_for_update()
-    print(f"Result: {result2}")
-    if result2.status != UpdateStatus.UP_TO_DATE:
-        failures.append(f"5: expected UP_TO_DATE when the highest tag matches APP_VERSION exactly, got {result2.status}")
+    with patch.object(update_check, "APP_VERSION", "1.0.0"):
+        same_version_list = [_release("v1.0.0"), _release("v0.0.1")]
+        with patch("urllib.request.urlopen", return_value=_mock_response(same_version_list)):
+            result2 = check_for_update()
+        print(f"Result: {result2}")
+        if result2.status != UpdateStatus.UP_TO_DATE:
+            failures.append(f"5: expected UP_TO_DATE when the highest tag matches the current version exactly, got {result2.status}")
 
-    older_only_list = [_release("v0.0.1"), _release("v0.1.0")]
-    with patch("urllib.request.urlopen", return_value=_mock_response(older_only_list)):
-        result_older = check_for_update()
-    print(f"Result (only older tags than current): {result_older}")
-    if result_older.status != UpdateStatus.UP_TO_DATE:
-        failures.append(f"5: releases all OLDER than APP_VERSION should also be UP_TO_DATE, got {result_older.status}")
+        older_only_list = [_release("v0.0.1"), _release("v0.1.0")]
+        with patch("urllib.request.urlopen", return_value=_mock_response(older_only_list)):
+            result_older = check_for_update()
+        print(f"Result (only older tags than current): {result_older}")
+        if result_older.status != UpdateStatus.UP_TO_DATE:
+            failures.append(f"5: releases all OLDER than the current version should also be UP_TO_DATE, got {result_older.status}")
 
     # ------------------------------------------------------------
     # 6 -- check_for_update(): CHECK_FAILED -- network error, timeout,
