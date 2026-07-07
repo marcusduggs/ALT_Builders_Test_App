@@ -60,7 +60,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -103,12 +102,6 @@ _SUM_DATA_STATUS_TEXT_COLOR = {
     "Done": QColor("#006100"),
     "Open": QColor("#9C0006"),
 }
-
-
-def _first_line(text) -> str:
-    if not text:
-        return ""
-    return str(text).split("\n", 1)[0]
 
 
 def _format_total(value) -> str:
@@ -417,7 +410,14 @@ class DataViewPage(QWidget):
             index_item = QStandardItem(str(row_data["index"]))
             self._apply_row_badge(index_item, row_data)
 
-            description_item = QStandardItem(_first_line(row_data.get("description")))
+            # Full 3-line description (component / code citation / test
+            # name), not just the first line -- wrapped across multiple
+            # visual lines via resizeRowsToContents() below, matching how
+            # the exported .xlsx already shows it (core.excel_export's
+            # _apply_description_wrap). Tooltip kept as a fallback for
+            # any line long enough to still get clipped at this column
+            # width.
+            description_item = QStandardItem(row_data.get("description") or "")
             description_item.setToolTip(row_data.get("description") or "")
 
             agency_item = QStandardItem(row_data.get("approval_agency") or "")
@@ -427,12 +427,17 @@ class DataViewPage(QWidget):
             required = set(row_data.get("required_stages", []))
             stage_status = row_data.get("stage_status", {})
             for stage in range(1, STAGE_COUNT + 1):
-                stage_item = QStandardItem("")
-                stage_item.setTextAlignment(Qt.AlignCenter)
                 if stage in required:
+                    stage_item = QStandardItem("")
                     status = stage_status.get(stage)
                     stage_item.setIcon(_stage_status_icon(status))
                     stage_item.setToolTip(_stage_tooltip(stage, status))
+                else:
+                    # Matches the source file's own convention (and
+                    # core.excel_reader.build_all_data(), which already
+                    # stores 0 here) -- a genuine "0", not blank.
+                    stage_item = QStandardItem("0")
+                stage_item.setTextAlignment(Qt.AlignCenter)
                 items.append(stage_item)
 
             vcr_item = QStandardItem("" if row_data.get("vcr") is None else str(row_data["vcr"]))
@@ -453,15 +458,20 @@ class DataViewPage(QWidget):
         table = FrozenTableView(frozen_columns=FROZEN_COLUMNS)
         table.setModel(model)
         table.setAlternatingRowColors(False)
+        table.setWordWrap(True)
         table.verticalHeader().hide()  # Index column already identifies each row
         table.setColumnWidth(0, 90)
-        table.setColumnWidth(1, 260)
+        table.setColumnWidth(1, 320)
         table.setColumnWidth(2, 140)
         for col in range(FROZEN_COLUMNS, FROZEN_COLUMNS + STAGE_COUNT):
             table.setColumnWidth(col, 56)
         table.setColumnWidth(FROZEN_COLUMNS + STAGE_COUNT, 56)
         table.setColumnWidth(FROZEN_COLUMNS + STAGE_COUNT + 1, 56)
         table.horizontalHeader().setMinimumSectionSize(40)
+        # Each row's height sized to fit its own wrapped Description text
+        # (some are 1 line, some wrap to several) -- must run AFTER
+        # column widths are set, since wrapping depends on them.
+        table.resizeRowsToContents()
         table.clicked.connect(self._on_cell_clicked)
         self.table = table
         return table
@@ -553,7 +563,7 @@ class DataViewPage(QWidget):
 
         for row_idx, row_data in enumerate(rows):
             index_item = QStandardItem(str(row_data["index"]))
-            description_item = QStandardItem(_first_line(row_data.get("description")))
+            description_item = QStandardItem(row_data.get("description") or "")
             description_item.setToolTip(row_data.get("description") or "")
             agency_item = QStandardItem(row_data.get("approval_agency") or "")
 
@@ -609,9 +619,10 @@ class DataViewPage(QWidget):
         table = FrozenTableView(frozen_columns=FROZEN_COLUMNS)
         table.setModel(model)
         table.setAlternatingRowColors(False)
+        table.setWordWrap(True)
         table.verticalHeader().hide()
         table.setColumnWidth(0, 90)
-        table.setColumnWidth(1, 260)
+        table.setColumnWidth(1, 320)
         table.setColumnWidth(2, 140)
         for col in range(FROZEN_COLUMNS, FROZEN_COLUMNS + STAGE_COUNT):
             table.setColumnWidth(col, 56)
@@ -622,6 +633,7 @@ class DataViewPage(QWidget):
         table.setColumnWidth(vcr_col + 3, 56)  # Total
         table.setColumnWidth(vcr_col + 4, 80)  # % Complete
         table.horizontalHeader().setMinimumSectionSize(40)
+        table.resizeRowsToContents()
         # Read-only view of the live status -- no click handler; the All
         # Data tab is the sole editing surface (see module docstring).
         return table
@@ -655,7 +667,7 @@ class DataViewPage(QWidget):
             values = [
                 row_data.get("approval_agency") or "",
                 row_data.get("index") or "",
-                _first_line(row_data.get("description")),
+                row_data.get("description") or "",
                 _format_total(row_data.get("total", 0)),
             ]
             for col_idx, value in enumerate(values):
@@ -666,11 +678,15 @@ class DataViewPage(QWidget):
                     item.setFont(bold_font)
                 table.setItem(row_idx, col_idx, item)
 
+        table.setWordWrap(True)
         table.setColumnWidth(0, 220)
         table.setColumnWidth(1, 90)
-        table.setColumnWidth(2, 320)
+        # Fixed width, not Stretch -- resizeRowsToContents() below needs a
+        # settled column width to compute wrapped-text row heights against;
+        # a Stretch column's width isn't final until the widget is shown.
+        table.setColumnWidth(2, 400)
         table.setColumnWidth(3, 100)
-        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        table.resizeRowsToContents()
         return table
 
     # ------------------------------------------------------------------

@@ -112,8 +112,8 @@ def _set_common_column_widths(ws: Worksheet, extra_col_widths: dict[int, int]) -
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
-def _apply_description_wrap(ws: Worksheet, excel_row: int) -> None:
-    ws.cell(row=excel_row, column=DESCRIPTION_COL).alignment = _DESCRIPTION_ALIGNMENT
+def _apply_description_wrap(ws: Worksheet, excel_row: int, column: int = DESCRIPTION_COL) -> None:
+    ws.cell(row=excel_row, column=column).alignment = _DESCRIPTION_ALIGNMENT
     ws.row_dimensions[excel_row].height = _DESCRIPTION_ROW_HEIGHT
 
 
@@ -148,8 +148,13 @@ def _write_all_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
             row_data.get("approval_agency") or "",
         ]
         for stage in range(1, STAGE_COUNT + 1):
-            status = stage_status.get(stage) if stage in required else None
-            values.append(_STAGE_MARKS.get(status, ""))
+            if stage in required:
+                values.append(_STAGE_MARKS.get(stage_status.get(stage), ""))
+            else:
+                # Matches the source file's own convention (and
+                # core.excel_reader.build_all_data(), which already
+                # stores 0 here) -- a genuine numeric 0, not blank.
+                values.append(0)
         values.append(row_data.get("vcr"))
         values.append(row_data.get("sum"))
         ws.append(values)
@@ -158,6 +163,9 @@ def _write_all_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
         _apply_description_wrap(ws, excel_row)
         for stage in required:
             _write_stage_cell(ws, excel_row, stage, stage_status.get(stage))
+        for stage in range(1, STAGE_COUNT + 1):
+            if stage not in required:
+                ws.cell(row=excel_row, column=STAGE_FIRST_COL + stage - 1).alignment = _STAGE_ALIGNMENT
 
     vcr_col = STAGE_LAST_COL + 1
     sum_col = vcr_col + 1
@@ -217,6 +225,9 @@ def _write_sum_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
     ws.freeze_panes = ws.cell(row=2, column=STAGE_FIRST_COL).coordinate
 
 
+REPORT_DESCRIPTION_COL = 3
+
+
 def _write_report_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
     headers = ["Approval Agency", "Index", "Description", "Total"]
     _write_header(ws, headers)
@@ -231,6 +242,7 @@ def _write_report_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
                 row_data.get("total", 0),
             ]
         )
+        _apply_description_wrap(ws, ws.max_row, column=REPORT_DESCRIPTION_COL)
         if is_grand_total:
             for cell in ws[ws.max_row]:
                 cell.font = _BOLD_FONT
