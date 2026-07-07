@@ -7,7 +7,7 @@ cumulative, plain-language list of what the app can do (matching the
 User Guide's tone), not a raw diff of the latest release.
 """
 
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.7.0"
 
 CHANGELOG_SUMMARY = """\
 - Track progress per stage with Done/Open status
@@ -19,4 +19,6 @@ update to an existing one
 - Keep every previous version of an increment, and view any of them at \
 any time
 - Export All Data, Sum Data, and Report to Excel
-- Choose where your data is stored"""
+- Choose where your data is stored
+- Check for app updates, and open the built-in help guide, from the \
+menu"""
