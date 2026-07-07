@@ -49,6 +49,7 @@ jobs:
       - name: Stamp APP_VERSION from the release tag
         env:
           TAG_NAME: ${{ github.ref_name }}
+          PYTHONPATH: ${{ github.workspace }}   # this step doesn't need it today (stdlib only), but cheap insurance
         shell: python
         run: |
           import os, re, pathlib
@@ -68,7 +69,16 @@ jobs:
       # body verbatim -- the SAME text the About dialog shows -- so
       # release notes and the in-app changelog can never drift apart
       # from each other.
+      #
+      # PYTHONPATH is required here: unlike `python -m` or a normal
+      # interactive run, a `shell: python` step does NOT put the repo
+      # root on sys.path on its own, so a bare `from core.app_version
+      # import ...` 404s with ModuleNotFoundError (confirmed -- this
+      # broke on the first real run, since the prior stamp step only
+      # used stdlib and never exercised this).
       - name: Extract changelog for the release body
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         shell: python
         run: |
           from core.app_version import CHANGELOG_SUMMARY
