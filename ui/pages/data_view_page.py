@@ -89,6 +89,21 @@ _STAGE_STATUS_LABELS = {
     "Open": "1",
 }
 
+# Sum Data's own required-stage cell style -- literal "Done"/"Open" text
+# on a full-cell fill, matching standard Excel conditional-formatting
+# "Good"/"Bad" cell styles (fill + text colors below are those exact
+# built-in Excel values), NOT the small icon-badge look All Data uses
+# (_stage_status_icon) -- a deliberate visual distinction between the
+# two tabs, per how Sum Data is meant to read like a status report.
+_SUM_DATA_STATUS_FILL = {
+    "Done": QColor("#C6EFCE"),
+    "Open": QColor("#FFC7CE"),
+}
+_SUM_DATA_STATUS_TEXT_COLOR = {
+    "Done": QColor("#006100"),
+    "Open": QColor("#9C0006"),
+}
+
 
 def _first_line(text) -> str:
     if not text:
@@ -530,7 +545,7 @@ class DataViewPage(QWidget):
     def _build_sum_data_table(self) -> FrozenTableView:
         headers = ["Index", "Description", "Approval Agency"]
         headers += [f"Stage {i}" for i in range(1, STAGE_COUNT + 1)]
-        headers += ["VCR", "% Complete"]
+        headers += ["VCR", "Open", "Done", "Total", "% Complete"]
 
         rows = self.increment.sum_data
         model = QStandardItemModel(len(rows), len(headers))
@@ -547,6 +562,7 @@ class DataViewPage(QWidget):
             required = row_data.get("required_stages", [])
             stage_status = row_data.get("stage_status", {})
             done_count = 0
+            open_count = 0
             for stage in range(1, STAGE_COUNT + 1):
                 stage_item = QStandardItem("")
                 stage_item.setTextAlignment(Qt.AlignCenter)
@@ -557,13 +573,29 @@ class DataViewPage(QWidget):
                     status = stage_status.get(stage, "Open")
                     if status == "Done":
                         done_count += 1
-                    stage_item.setIcon(_stage_status_icon(status))
+                    else:
+                        open_count += 1
+                    stage_item.setText(status)
+                    stage_item.setBackground(_SUM_DATA_STATUS_FILL[status])
+                    stage_item.setForeground(_SUM_DATA_STATUS_TEXT_COLOR[status])
                     stage_item.setToolTip(f"Stage {stage} — {status}")
                 items.append(stage_item)
 
             vcr_item = QStandardItem("" if row_data.get("vcr") is None else str(row_data["vcr"]))
             vcr_item.setTextAlignment(Qt.AlignCenter)
             items.append(vcr_item)
+
+            open_item = QStandardItem(str(open_count))
+            open_item.setTextAlignment(Qt.AlignCenter)
+            items.append(open_item)
+
+            done_item = QStandardItem(str(done_count))
+            done_item.setTextAlignment(Qt.AlignCenter)
+            items.append(done_item)
+
+            total_item = QStandardItem(str(len(required)))
+            total_item.setTextAlignment(Qt.AlignCenter)
+            items.append(total_item)
 
             pct_item = QStandardItem(_format_pct(done_count, len(required)))
             pct_item.setTextAlignment(Qt.AlignCenter)
@@ -583,8 +615,12 @@ class DataViewPage(QWidget):
         table.setColumnWidth(2, 140)
         for col in range(FROZEN_COLUMNS, FROZEN_COLUMNS + STAGE_COUNT):
             table.setColumnWidth(col, 56)
-        table.setColumnWidth(FROZEN_COLUMNS + STAGE_COUNT, 56)
-        table.setColumnWidth(FROZEN_COLUMNS + STAGE_COUNT + 1, 80)
+        vcr_col = FROZEN_COLUMNS + STAGE_COUNT
+        table.setColumnWidth(vcr_col, 56)
+        table.setColumnWidth(vcr_col + 1, 56)  # Open
+        table.setColumnWidth(vcr_col + 2, 56)  # Done
+        table.setColumnWidth(vcr_col + 3, 56)  # Total
+        table.setColumnWidth(vcr_col + 4, 80)  # % Complete
         table.horizontalHeader().setMinimumSectionSize(40)
         # Read-only view of the live status -- no click handler; the All
         # Data tab is the sole editing surface (see module docstring).
