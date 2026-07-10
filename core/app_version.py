@@ -1,15 +1,17 @@
 """Single source of truth for the app's displayed version and changelog
 summary -- shown in the About dialog (ui/dialogs/about_dialog.py).
 
-APP_VERSION below is a PLACEHOLDER for local/dev runs and ordinary
-main-push CI builds -- it is NOT what a released build shows.
-.github/workflows/release.yml overwrites this line in its own CI
+APP_VERSION is currently hand-bumped per release (as of the 0.8.0
+release, by explicit request -- see git history) rather than left at
+the "0.0.0-dev" placeholder this file previously documented.
+.github/workflows/release.yml still OVERWRITES this line in its own CI
 workspace (never committed back) with the exact tag being released,
 immediately before packaging, so a shipped .exe's version can never
-drift from the tag that produced it -- there is no longer a
-hand-maintained release-version string to forget to bump. This
-placeholder staying "0.0.0-dev" is expected and correct; it just means
-"this isn't a tagged release build."
+drift from the tag regardless of whatever value is committed here --
+but since that value is no longer "0.0.0-dev", local/dev and ordinary
+main-push CI builds now show the last-released version number too,
+not an obvious "unreleased" marker. Remember to bump this by hand on
+each release if that distinction matters again.
 
 CHANGELOG_SUMMARY IS still manually maintained -- prose can't be
 derived from a tag name -- and is reused verbatim as the GitHub Release
@@ -17,7 +19,7 @@ body by that same workflow, so release notes and the About dialog's
 changelog can never drift apart from EACH OTHER either.
 """
 
-APP_VERSION = "0.0.0-dev"
+APP_VERSION = "0.8.0"
 
 CHANGELOG_SUMMARY = """\
 - Track progress per stage with Done/Open status
@@ -31,4 +33,11 @@ any time
 - Export All Data, Sum Data, and Report to Excel
 - Choose where your data is stored
 - Check for app updates, and open the built-in help guide, from the \
-menu"""
+menu
+- Renamed to Altamirano Builders TIO Compliance and Reporting
+- Combine multiple increments into one report, with a read-only \
+preview before exporting
+- See a state's official revision log, this app's own update history, \
+and your own notes together on one Changes tab
+- View the help guide in a built-in window instead of an external PDF \
+viewer"""
