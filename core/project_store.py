@@ -47,6 +47,13 @@ Layout:
                                          ComparisonResult the review screen already
                                          computed and showed the user, not a
                                          recomputation.
+              comments.json              [{id, timestamp, text}, ...] -- free-text
+                                         notes a user of this app typed directly onto
+                                         the Changes tab, not derived from any file.
+                                         Append-only like change_history.json: removed
+                                         via delete_comment() (an explicit action), not
+                                         in-place edits. See add_comment()/
+                                         load_comments()/delete_comment().
               files/
                 v1_2026-05-10.xlsm
                 v2_2026-06-26.xlsm       <- current version = highest v#
@@ -82,6 +89,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -549,3 +557,102 @@ class ProjectStore:
         if not path.exists():
             return []
         return _read_json(path)
+
+    # ------------------------------------------------------------------
+    # comments -- free-text notes a user of THIS app types directly onto
+    # an increment's Changes tab; distinct from both status.json (a
+    # Done/Open mark) and change_history.json (app-DETECTED diffs) -- a
+    # human's own words, not derived from the file at all. Unlike
+    # change_history.json's append-only convention, comments support
+    # full CRUD: update_comment() edits a comment's text in place
+    # (preserving its original "id" and creation "timestamp" -- an edit
+    # is not delete+recreate, which would lose when the comment was
+    # first written -- and sets "edited_timestamp" so the fact and time
+    # of the edit is visible, not silently hidden). delete_comment()
+    # removes an entry outright, an explicit, visible action.
+    # ------------------------------------------------------------------
+    def _comments_json_path(self, project_slug: str, increment_slug: str) -> Path:
+        return self._increments_dir(project_slug) / increment_slug / "comments.json"
+
+    def add_comment(self, project_name: str, increment_name: str, text: str) -> dict[str, Any]:
+        """Appends one {id, timestamp, text, edited_timestamp} entry to
+        comments.json and returns it -- `id` (a uuid4 hex string) is
+        what update_comment()/delete_comment() target, since comment
+        text itself isn't a safe identity key (two comments can
+        legitimately have identical text). `edited_timestamp` starts
+        None -- see update_comment().
+        """
+        project = self.get_project(project_name)
+        increment = self.get_increment(project_name, increment_name) if project else None
+        if project is None or increment is None:
+            raise ValueError(f"No increment named {increment_name!r} in project {project_name!r}")
+        entry = {
+            "id": uuid.uuid4().hex,
+            "timestamp": datetime.now().isoformat(),
+            "text": text,
+            "edited_timestamp": None,
+        }
+        path = self._comments_json_path(project.slug, increment.slug)
+        comments = _read_json(path) if path.exists() else []
+        comments.append(entry)
+        _write_json(path, comments)
+        return entry
+
+    def load_comments(self, project_name: str, increment_name: str) -> list[dict[str, Any]]:
+        """All persisted comments for this increment, OLDEST first
+        (append order, same convention as load_change_history) --
+        callers wanting newest-first reverse this themselves.
+        """
+        project = self.get_project(project_name)
+        increment = self.get_increment(project_name, increment_name) if project else None
+        if project is None or increment is None:
+            return []
+        path = self._comments_json_path(project.slug, increment.slug)
+        if not path.exists():
+            return []
+        return _read_json(path)
+
+    def update_comment(
+        self, project_name: str, increment_name: str, comment_id: str, new_text: str
+    ) -> dict[str, Any] | None:
+        """Edits exactly the comment with this id IN PLACE: only "text"
+        and "edited_timestamp" change -- "id" and the original creation
+        "timestamp" are untouched, so an edit can never be mistaken for
+        a newly-written comment or lose when it was actually first
+        posted. Returns the updated entry, or None if no comment with
+        this id exists (a no-op, not an error -- same
+        stale-list-tolerant convention as delete_comment()).
+        """
+        project = self.get_project(project_name)
+        increment = self.get_increment(project_name, increment_name) if project else None
+        if project is None or increment is None:
+            return None
+        path = self._comments_json_path(project.slug, increment.slug)
+        if not path.exists():
+            return None
+        comments = _read_json(path)
+        updated = None
+        for comment in comments:
+            if comment.get("id") == comment_id:
+                comment["text"] = new_text
+                comment["edited_timestamp"] = datetime.now().isoformat()
+                updated = comment
+                break
+        if updated is not None:
+            _write_json(path, comments)
+        return updated
+
+    def delete_comment(self, project_name: str, increment_name: str, comment_id: str) -> None:
+        """Removes exactly the comment with this id, if present -- a
+        no-op (not an error) if it's already gone, so a UI double-click
+        or a stale in-memory list can never raise.
+        """
+        project = self.get_project(project_name)
+        increment = self.get_increment(project_name, increment_name) if project else None
+        if project is None or increment is None:
+            return
+        path = self._comments_json_path(project.slug, increment.slug)
+        if not path.exists():
+            return
+        comments = [c for c in _read_json(path) if c.get("id") != comment_id]
+        _write_json(path, comments)

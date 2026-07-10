@@ -22,12 +22,16 @@ _write_sum_data_stage_cell), not All Data's dark-fill "X"/"1" marks --
 Sum Data is a status report, not a re-importable source sheet, so it's
 free to read the way a human expects a status column to read.
 
-Changes is two independent tables stacked in one sheet -- see
+Changes is three independent tables stacked in one sheet -- see
 _write_changes_sheet -- State Revision Log (the state's own J-Changes
-content, read-only reference data) then Update History (this app's own
-accumulated change_history.json, newest first). Read-only reference
-data throughout: nothing here round-trips on re-import the way All
-Data's stage marks do.
+content, read-only reference data), Update History (this app's own
+accumulated change_history.json, newest first), then Comments (this
+app's own accumulated comments.json, newest first, including an
+"Edited" column when a comment has been edited in place). State
+Revision Log/Update History are read-only reference data that never
+round-trips on re-import the way All Data's stage marks do; Comments is
+free text a user typed directly into this app, same non-round-tripping
+treatment.
 """
 
 from __future__ import annotations
@@ -81,11 +85,12 @@ AGENCY_COL = 3
 STAGE_FIRST_COL = 4
 STAGE_LAST_COL = STAGE_FIRST_COL + STAGE_COUNT - 1
 
-# Changes sheet -- two stacked tables sharing one column grid (see
-# _write_changes_sheet). State Revision Log's long text (Synopsis) and
-# Update History's long text (Detail) deliberately share column B, and
-# Revision Log's three date columns / History's version+date columns
-# share columns D-F, so one set of column widths below serves both
+# Changes sheet -- three stacked tables sharing one column grid (see
+# _write_changes_sheet). State Revision Log's long text (Synopsis),
+# Update History's long text (Detail), and Comments' own free text
+# deliberately all share column B, and Revision Log's three date
+# columns / History's version+date columns / Comments' date share
+# columns C-F, so one set of column widths below serves all three
 # tables reasonably rather than needing per-section widths (which
 # openpyxl has no way to express within a single column anyway).
 REVISION_NUM_COL = 1
@@ -101,6 +106,11 @@ SUMMARY_COL = 3
 OLD_VERSION_COL = 4
 NEW_VERSION_COL = 5
 UPDATE_DATE_COL = 6
+
+COMMENT_NUM_COL = 1
+COMMENT_TEXT_COL = 2
+COMMENT_DATE_COL = 3
+COMMENT_EDITED_COL = 4
 
 # Descriptions are 3 logical lines (component name, code citation, test
 # description) joined with embedded \n. openpyxl can't auto-fit row height
@@ -435,13 +445,16 @@ def _wrapped_row_height(text: str) -> int:
     return max(_DESCRIPTION_ROW_HEIGHT, line_count * 15 + 10)
 
 
-def _write_changes_sheet(ws: Worksheet, changes_log: list[dict], change_history: list[dict]) -> None:
-    """Two independent tables stacked in one sheet, separated by a blank
-    row -- State Revision Log (the state's own J-Changes content, see
-    core.excel_reader.raw_changes_log) then Update History (this app's
-    accumulated change_history.json) -- matching
-    ui.pages.data_view_page's Changes tab section order, content, and
-    (for Update History) newest-first ordering exactly.
+def _write_changes_sheet(
+    ws: Worksheet, changes_log: list[dict], change_history: list[dict], comments: list[dict]
+) -> None:
+    """Three independent tables stacked in one sheet, each separated by
+    a blank row -- State Revision Log (the state's own J-Changes
+    content, see core.excel_reader.raw_changes_log), Update History
+    (this app's accumulated change_history.json), then Comments (this
+    app's accumulated comments.json) -- matching ui.pages.data_view_page's
+    Changes tab section order, content, and (for Update History/
+    Comments) newest-first ordering exactly.
     """
     section_row = 1
     ws.cell(row=section_row, column=1, value="State Revision Log").font = _BOLD_FONT
@@ -491,6 +504,31 @@ def _write_changes_sheet(ws: Worksheet, changes_log: list[dict], change_history:
         row += 1
     if not change_history:
         ws.cell(row=row, column=1, value="No updates confirmed yet for this increment.")
+        row += 1
+
+    row += 1  # blank separator row
+    comments_section_row = row
+    ws.cell(row=comments_section_row, column=1, value="Comments").font = _BOLD_FONT
+
+    comments_header_row = comments_section_row + 1
+    comments_headers = ["#", "Comment", "Date", "Edited"]
+    for col, label in enumerate(comments_headers, start=1):
+        ws.cell(row=comments_header_row, column=col, value=label).font = _HEADER_FONT
+
+    row = comments_header_row + 1
+    # Newest first, same reversal/convention as Update History above --
+    # comments.json is also stored oldest-first (append order).
+    for i, entry in enumerate(reversed(comments), start=1):
+        text = entry.get("text") or ""
+        edited_timestamp = entry.get("edited_timestamp")
+        ws.cell(row=row, column=COMMENT_NUM_COL, value=i)
+        ws.cell(row=row, column=COMMENT_TEXT_COL, value=text).alignment = _DESCRIPTION_ALIGNMENT
+        ws.cell(row=row, column=COMMENT_DATE_COL, value=(entry.get("timestamp") or "").split("T", 1)[0])
+        ws.cell(row=row, column=COMMENT_EDITED_COL, value=edited_timestamp.split("T", 1)[0] if edited_timestamp else "")
+        ws.row_dimensions[row].height = _wrapped_row_height(text)
+        row += 1
+    if not comments:
+        ws.cell(row=row, column=1, value="No comments yet for this increment.")
 
     ws.column_dimensions[get_column_letter(1)].width = 10
     ws.column_dimensions[get_column_letter(2)].width = 70
@@ -518,6 +556,6 @@ def export_increment(increment: Any, path: str) -> None:
     _write_report_sheet(ws_report, increment.report)
 
     ws_changes = wb.create_sheet("Changes")
-    _write_changes_sheet(ws_changes, increment.changes_log, increment.change_history)
+    _write_changes_sheet(ws_changes, increment.changes_log, increment.change_history, increment.comments)
 
     wb.save(path)

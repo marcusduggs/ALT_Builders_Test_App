@@ -28,25 +28,26 @@ together at the very end. Deliberately NOT labeled just "Grand Total"
 like the per-section rows, so it's never ambiguous which total is the
 combined one when scanning the sheet.
 
-Changes: State Revision Log and Update History (see
+Changes: State Revision Log, Update History, AND Comments (see
 core.excel_export._write_changes_sheet, the single-increment version of
 this sheet) are each flattened across every selected increment with a
 leading Increment column -- the SAME "concatenate, don't section"
 treatment as All Data/Sum Data, deliberately NOT Report's per-increment
 sectioning. That choice was made explicitly (not just for consistency):
-neither Changes sub-table has a per-increment OR overall total worth
-visually separating for the way Report's sections exist specifically to
-set off its per-section and Grand Total rows -- sectioning here would
-only cost readability/filterability (a flat table sorts and filters in
-Excel; per-increment blocks don't) without buying back anything
-sectioning is for. Each increment's own rows stay contiguous, in
-on-screen order, exactly like All Data/Sum Data; Update History is
-additionally newest-first WITHIN each increment's block (matching
-core.excel_export's single-increment ordering), not globally
-interleaved by date across increments -- a user wanting a true
-cross-increment timeline can sort the Date column themselves, which
-this flattened layout enables and per-increment sectioning would not
-have. No combined totals row (there is nothing to sum).
+none of the three Changes sub-tables has a per-increment OR overall
+total worth visually separating for the way Report's sections exist
+specifically to set off its per-section and Grand Total rows --
+sectioning here would only cost readability/filterability (a flat table
+sorts and filters in Excel; per-increment blocks don't) without buying
+back anything sectioning is for. Each increment's own rows stay
+contiguous, in on-screen order, exactly like All Data/Sum Data; Update
+History and Comments are additionally newest-first WITHIN each
+increment's block (matching core.excel_export's single-increment
+ordering), not globally interleaved by date across increments -- a user
+wanting a true cross-increment timeline can sort the Date column
+themselves, which this flattened layout enables and per-increment
+sectioning would not have. No combined totals row (there is nothing to
+sum).
 
 Column layout is shifted +1 versus core/excel_export.py throughout (the
 new leading Increment column), so this module keeps its own column
@@ -55,6 +56,21 @@ core.excel_export's directly -- those hardcode positions that would
 misalign by one column here. Style constants (colors/fonts) and the
 small Changes-sheet formatting helpers ARE reused from there, so this
 never invents a second, subtly-different palette or phrasing.
+
+======================================================================
+SHARED ROW-BUILDING FUNCTIONS (build_combined_*, combine_all_data_totals)
+======================================================================
+The public build_combined_*/combine_all_data_totals functions below are
+the SINGLE source of truth for which rows appear, in what order, and
+with what derived values (live status, counts, section/grand-total
+flags) -- pure Python, no openpyxl. The _write_combined_*_sheet
+functions consume them and add nothing but cell styling/formatting.
+ui.mock_data.build_combined_view() consumes the exact same functions to
+build the on-screen combined preview (ui/pages/combined_data_view_page.py).
+This is deliberate, not incidental: it is the mechanism that guarantees
+the preview and the exported .xlsx can never disagree about content --
+there is no second, independently-maintained copy of "which rows, what
+order, what totals" for the UI to drift from.
 """
 
 from __future__ import annotations
@@ -116,6 +132,10 @@ CHANGES_OLD_VERSION_COL = 5
 CHANGES_NEW_VERSION_COL = 6
 CHANGES_UPDATE_DATE_COL = 7
 
+CHANGES_COMMENT_NUM_COL = 2
+CHANGES_COMMENT_TEXT_COL = 3
+CHANGES_COMMENT_DATE_COL = 4
+
 
 def default_combined_filename(project_name: str, increment_count: int) -> str:
     """"{ProjectName}_Combined_{N}-increments.xlsx" -- same filesystem-
@@ -164,7 +184,7 @@ def _write_sum_data_stage_cell(ws: Worksheet, excel_row: int, stage: int, status
     cell.alignment = _STAGE_ALIGNMENT
 
 
-def _combine_all_data_totals(increments: list[Any]) -> dict[str, Any]:
+def combine_all_data_totals(increments: list[Any]) -> dict[str, Any]:
     """Sums each increment's OWN already-computed all_data_totals dict
     together, key by key. Correct and simpler than recomputing from raw
     combined rows from scratch: these are already per-column numeric
@@ -181,40 +201,160 @@ def _combine_all_data_totals(increments: list[Any]) -> dict[str, Any]:
     return combined
 
 
+def build_combined_all_data_rows(increments: list[Any]) -> list[dict]:
+    """[{"increment": name, **row_data}, ...], concatenated across every
+    increment in on-screen order -- exactly the rows/order
+    _write_combined_all_data_sheet writes (see module docstring).
+    """
+    return [{"increment": increment.name, **row_data} for increment in increments for row_data in increment.all_data]
+
+
+def build_combined_sum_data_rows(increments: list[Any]) -> list[dict]:
+    """Same as build_combined_all_data_rows, but for Sum Data -- each
+    dict additionally carries precomputed "live_status" (per required
+    stage, defaulting any stage with no status.json entry to "Open" --
+    Sum Data's "current state" framing, same as core.excel_export's
+    single-increment version), "open_count", "done_count",
+    "total_count", "pct_complete", so nothing consuming this list ever
+    independently re-derives (and risks disagreeing on) these
+    live-status-dependent values.
+    """
+    rows = []
+    for increment in increments:
+        for row_data in increment.sum_data:
+            required = row_data.get("required_stages", [])
+            stage_status = row_data.get("stage_status", {})
+            live_status = {stage: stage_status.get(stage, "Open") for stage in required}
+            done_count = sum(1 for status in live_status.values() if status == "Done")
+            open_count = sum(1 for status in live_status.values() if status == "Open")
+            total_count = len(required)
+            pct = (done_count / total_count) if required else None
+            rows.append(
+                {
+                    "increment": increment.name,
+                    **row_data,
+                    "live_status": live_status,
+                    "open_count": open_count,
+                    "done_count": done_count,
+                    "total_count": total_count,
+                    "pct_complete": pct,
+                }
+            )
+    return rows
+
+
+def build_combined_report_rows(increments: list[Any]) -> list[dict]:
+    """The FULL Report row sequence -- per-increment section header rows,
+    every item row, and the final combined Grand Total row -- everything
+    _write_combined_report_sheet writes. Each row is explicitly tagged
+    ("is_section_header"/"is_grand_total"/"is_combined_grand_total")
+    rather than leaving a consumer to infer row type from field values
+    (e.g. approval_agency == "Grand Total"), so a real item whose
+    Approval Agency happens to literally be that string can never be
+    misidentified as a totals row downstream.
+    """
+    rows = []
+    combined_grand_total = 0.0
+    for increment in increments:
+        rows.append(
+            {
+                "is_section_header": True, "is_grand_total": False, "is_combined_grand_total": False,
+                "approval_agency": increment.name, "index": "", "description": "", "total": None,
+            }
+        )
+        for row_data in increment.report:
+            is_grand_total = row_data.get("approval_agency") == "Grand Total"
+            rows.append(
+                {
+                    "is_section_header": False, "is_grand_total": is_grand_total, "is_combined_grand_total": False,
+                    "approval_agency": row_data.get("approval_agency") or "",
+                    "index": row_data.get("index") or "",
+                    "description": row_data.get("description") or "",
+                    "total": row_data.get("total", 0),
+                }
+            )
+            if is_grand_total:
+                combined_grand_total += row_data.get("total", 0) or 0
+    rows.append(
+        {
+            "is_section_header": False, "is_grand_total": False, "is_combined_grand_total": True,
+            "approval_agency": "Grand Total (All Increments)", "index": "", "description": "",
+            "total": combined_grand_total,
+        }
+    )
+    return rows
+
+
+def build_combined_changes_data(increments: list[Any]) -> dict[str, list[dict]]:
+    """{"revision_log_rows": [...], "update_history_rows": [...]} --
+    both flattened across increments with a leading "increment" tag, in
+    the exact row set/order _write_combined_changes_sheet writes. Update
+    History rows are newest-first WITHIN each increment's own block (see
+    module docstring for why this isn't globally interleaved by date),
+    and additionally carry a 1-based "update_number" per increment
+    (matching the per-increment "Update #" column the export writes).
+    """
+    revision_log_rows = [
+        {"increment": increment.name, **entry} for increment in increments for entry in increment.changes_log
+    ]
+    update_history_rows = [
+        {"increment": increment.name, "update_number": i, **entry}
+        for increment in increments
+        for i, entry in enumerate(reversed(increment.change_history), start=1)
+    ]
+    return {"revision_log_rows": revision_log_rows, "update_history_rows": update_history_rows}
+
+
+def build_combined_comments_rows(increments: list[Any]) -> list[dict]:
+    """Comments flattened across every selected increment with a leading
+    "increment" tag, newest-first WITHIN each increment's own block, each
+    increment's own rows contiguous in on-screen order -- the exact row
+    set/order _write_combined_changes_sheet writes for the Comments
+    table (see module docstring for why this is flattened, not
+    sectioned, same as State Revision Log/Update History). Carries a
+    1-based "comment_number" per increment, matching the per-increment
+    "#" column the export writes.
+    """
+    return [
+        {"increment": increment.name, "comment_number": i, **entry}
+        for increment in increments
+        for i, entry in enumerate(reversed(increment.comments), start=1)
+    ]
+
+
 def _write_combined_all_data_sheet(ws: Worksheet, increments: list[Any]) -> None:
     headers = ["Increment", "Index", "Description", "Approval Agency"] + _stage_headers() + ["VCR", "SUM"]
     _write_header(ws, headers)
 
-    for increment in increments:
-        for row_data in increment.all_data:
-            required = set(row_data.get("required_stages", []))
-            stage_status = row_data.get("stage_status", {})
-            values = [
-                increment.name,
-                row_data.get("index"),
-                row_data.get("description") or "",
-                row_data.get("approval_agency") or "",
-            ]
-            for stage in range(1, STAGE_COUNT + 1):
-                if stage in required:
-                    values.append(_STAGE_MARKS.get(stage_status.get(stage), ""))
-                else:
-                    # Same "0, not blank" convention as core.excel_export.
-                    values.append(0)
-            vcr = row_data.get("vcr")
-            values.append(0 if vcr is None else vcr)
-            values.append(row_data.get("sum"))
-            ws.append(values)
+    for row_data in build_combined_all_data_rows(increments):
+        required = set(row_data.get("required_stages", []))
+        stage_status = row_data.get("stage_status", {})
+        values = [
+            row_data["increment"],
+            row_data.get("index"),
+            row_data.get("description") or "",
+            row_data.get("approval_agency") or "",
+        ]
+        for stage in range(1, STAGE_COUNT + 1):
+            if stage in required:
+                values.append(_STAGE_MARKS.get(stage_status.get(stage), ""))
+            else:
+                # Same "0, not blank" convention as core.excel_export.
+                values.append(0)
+        vcr = row_data.get("vcr")
+        values.append(0 if vcr is None else vcr)
+        values.append(row_data.get("sum"))
+        ws.append(values)
 
-            excel_row = ws.max_row
-            _apply_description_wrap(ws, excel_row, column=DESCRIPTION_COL)
-            for stage in required:
-                _write_stage_cell(ws, excel_row, stage, stage_status.get(stage))
-            for stage in range(1, STAGE_COUNT + 1):
-                if stage not in required:
-                    ws.cell(row=excel_row, column=STAGE_FIRST_COL + stage - 1).alignment = _STAGE_ALIGNMENT
+        excel_row = ws.max_row
+        _apply_description_wrap(ws, excel_row, column=DESCRIPTION_COL)
+        for stage in required:
+            _write_stage_cell(ws, excel_row, stage, stage_status.get(stage))
+        for stage in range(1, STAGE_COUNT + 1):
+            if stage not in required:
+                ws.cell(row=excel_row, column=STAGE_FIRST_COL + stage - 1).alignment = _STAGE_ALIGNMENT
 
-    totals = _combine_all_data_totals(increments)
+    totals = combine_all_data_totals(increments)
     totals_values = ["Totals", "", "", ""]
     for stage in range(1, STAGE_COUNT + 1):
         totals_values.append(totals.get(f"Stage {stage}", 0))
@@ -241,41 +381,33 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
     ]
     _write_header(ws, headers)
 
-    all_rows_combined: list[dict] = []
-    for increment in increments:
-        for row_data in increment.sum_data:
-            required = row_data.get("required_stages", [])
-            stage_status = row_data.get("stage_status", {})
-            live_status = {stage: stage_status.get(stage, "Open") for stage in required}
-            done_count = sum(1 for status in live_status.values() if status == "Done")
-            open_count = sum(1 for status in live_status.values() if status == "Open")
-            total_count = len(required)
-            pct = (done_count / total_count) if required else None
+    rows = build_combined_sum_data_rows(increments)
+    for row_data in rows:
+        live_status = row_data["live_status"]
+        pct = row_data["pct_complete"]
 
-            values = [
-                increment.name,
-                row_data.get("index"),
-                row_data.get("description") or "",
-                row_data.get("approval_agency") or "",
-            ]
-            values += ["" for _ in range(1, STAGE_COUNT + 1)]  # written properly below via _write_sum_data_stage_cell
-            values.append(row_data.get("vcr"))
-            values.append(open_count)
-            values.append(done_count)
-            values.append(total_count)
-            values.append(pct)
-            ws.append(values)
+        values = [
+            row_data["increment"],
+            row_data.get("index"),
+            row_data.get("description") or "",
+            row_data.get("approval_agency") or "",
+        ]
+        values += ["" for _ in range(1, STAGE_COUNT + 1)]  # written properly below via _write_sum_data_stage_cell
+        values.append(row_data.get("vcr"))
+        values.append(row_data["open_count"])
+        values.append(row_data["done_count"])
+        values.append(row_data["total_count"])
+        values.append(pct)
+        ws.append(values)
 
-            excel_row = ws.max_row
-            _apply_description_wrap(ws, excel_row, column=DESCRIPTION_COL)
-            for stage, status in live_status.items():
-                _write_sum_data_stage_cell(ws, excel_row, stage, status)
+        excel_row = ws.max_row
+        _apply_description_wrap(ws, excel_row, column=DESCRIPTION_COL)
+        for stage, status in live_status.items():
+            _write_sum_data_stage_cell(ws, excel_row, stage, status)
 
-            pct_col = STAGE_LAST_COL + 5
-            if pct is not None:
-                ws.cell(row=excel_row, column=pct_col).number_format = "0%"
-
-            all_rows_combined.append(row_data)
+        pct_col = STAGE_LAST_COL + 5
+        if pct is not None:
+            ws.cell(row=excel_row, column=pct_col).number_format = "0%"
 
     vcr_col = STAGE_LAST_COL + 1
     open_col = vcr_col + 1
@@ -285,8 +417,11 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
 
     # Live totals across ALL selected increments' rows together --
     # recomputed fresh every export, same as the single-increment case
-    # (see core.excel_reader.live_sum_data_totals), never cached.
-    totals = live_sum_data_totals(all_rows_combined)
+    # (see core.excel_reader.live_sum_data_totals), never cached. Reads
+    # required_stages/stage_status straight off the enriched rows above
+    # (still present via **row_data) -- the extra keys build_combined_sum_data_rows
+    # added are simply ignored.
+    totals = live_sum_data_totals(rows)
     totals_values = ["Totals", "", "", ""]
     for stage in range(1, STAGE_COUNT + 1):
         totals_values.append(totals["stage_open_counts"][stage])
@@ -317,40 +452,31 @@ def _write_combined_report_sheet(ws: Worksheet, increments: list[Any]) -> None:
     headers = ["Approval Agency", "Index", "Description", "Total"]
     _write_header(ws, headers)
 
-    combined_grand_total = 0.0
-    for increment in increments:
-        # Section header row -- visually distinct (bold + tint), reusing
-        # the same "this is a summary, not a real item" styling the
-        # bottom totals rows already use elsewhere in this app.
-        ws.append([increment.name, "", "", ""])
-        for cell in ws[ws.max_row]:
-            cell.font = _TOTALS_FONT
-            cell.fill = _TOTALS_FILL
-
-        for row_data in increment.report:
-            is_grand_total = row_data.get("approval_agency") == "Grand Total"
-            ws.append(
-                [
-                    row_data.get("approval_agency") or "",
-                    row_data.get("index") or "",
-                    row_data.get("description") or "",
-                    row_data.get("total", 0),
-                ]
-            )
-            _apply_description_wrap(ws, ws.max_row, column=3)
-            if is_grand_total:
-                for cell in ws[ws.max_row]:
+    for row_data in build_combined_report_rows(increments):
+        ws.append(
+            [
+                row_data["approval_agency"],
+                row_data["index"],
+                row_data["description"],
+                row_data["total"] if row_data["total"] is not None else "",
+            ]
+        )
+        excel_row = ws.max_row
+        if row_data["is_section_header"] or row_data["is_combined_grand_total"]:
+            # Visually distinct (bold + tint) -- reusing the same "this
+            # is a summary, not a real item" styling the bottom totals
+            # rows already use elsewhere in this app. Deliberately NOT
+            # labeled just "Grand Total" like each section's own row, so
+            # it's never ambiguous which total is the combined one when
+            # scanning the sheet.
+            for cell in ws[excel_row]:
+                cell.font = _TOTALS_FONT
+                cell.fill = _TOTALS_FILL
+        else:
+            _apply_description_wrap(ws, excel_row, column=3)
+            if row_data["is_grand_total"]:
+                for cell in ws[excel_row]:
                     cell.font = _BOLD_FONT
-                combined_grand_total += row_data.get("total", 0) or 0
-
-    # ONE overall total across every section -- deliberately NOT labeled
-    # just "Grand Total" like each section's own row above, so it's
-    # never ambiguous which total is the combined one when scanning the
-    # sheet.
-    ws.append(["Grand Total (All Increments)", "", "", combined_grand_total])
-    for cell in ws[ws.max_row]:
-        cell.font = _TOTALS_FONT
-        cell.fill = _TOTALS_FILL
 
     ws.column_dimensions[get_column_letter(1)].width = 30
     ws.column_dimensions[get_column_letter(2)].width = 12
@@ -359,10 +485,10 @@ def _write_combined_report_sheet(ws: Worksheet, increments: list[Any]) -> None:
 
 
 def _write_combined_changes_sheet(ws: Worksheet, increments: list[Any]) -> None:
-    """State Revision Log then Update History, each flattened across
-    every selected increment with a leading Increment column -- see the
-    module docstring for why this deliberately does NOT use Report's
-    per-increment sectioning.
+    """State Revision Log, Update History, then Comments, each flattened
+    across every selected increment with a leading Increment column --
+    see the module docstring for why this deliberately does NOT use
+    Report's per-increment sectioning.
     """
     section_row = 1
     ws.cell(row=section_row, column=1, value="State Revision Log").font = _BOLD_FONT
@@ -375,22 +501,23 @@ def _write_combined_changes_sheet(ws: Worksheet, increments: list[Any]) -> None:
     for col, label in enumerate(revision_headers, start=1):
         ws.cell(row=header_row, column=col, value=label).font = _HEADER_FONT
 
+    changes_data = build_combined_changes_data(increments)
+    revision_log_rows = changes_data["revision_log_rows"]
+    update_history_rows = changes_data["update_history_rows"]
+
     row = header_row + 1
-    any_revisions = False
-    for increment in increments:
-        for entry in increment.changes_log:
-            any_revisions = True
-            synopsis = entry.get("synopsis") or ""
-            ws.cell(row=row, column=INCREMENT_COL, value=increment.name)
-            ws.cell(row=row, column=CHANGES_REVISION_NUM_COL, value=entry.get("revision_number"))
-            ws.cell(row=row, column=CHANGES_SYNOPSIS_COL, value=synopsis).alignment = _DESCRIPTION_ALIGNMENT
-            ws.cell(row=row, column=CHANGES_AOR_SIGNATURE_COL, value=_format_changes_date(entry.get("aor_signature_date")))
-            ws.cell(row=row, column=CHANGES_SEOR_SIGNATURE_COL, value=_format_changes_date(entry.get("seor_signature_date")))
-            ws.cell(row=row, column=CHANGES_EFFECTIVE_DATE_COL, value=_format_changes_date(entry.get("effective_date")))
-            ws.cell(row=row, column=CHANGES_HCAI_CONCURRENCE_COL, value=entry.get("hcai_concurrence") or "")
-            ws.row_dimensions[row].height = _wrapped_row_height(synopsis)
-            row += 1
-    if not any_revisions:
+    for entry in revision_log_rows:
+        synopsis = entry.get("synopsis") or ""
+        ws.cell(row=row, column=INCREMENT_COL, value=entry["increment"])
+        ws.cell(row=row, column=CHANGES_REVISION_NUM_COL, value=entry.get("revision_number"))
+        ws.cell(row=row, column=CHANGES_SYNOPSIS_COL, value=synopsis).alignment = _DESCRIPTION_ALIGNMENT
+        ws.cell(row=row, column=CHANGES_AOR_SIGNATURE_COL, value=_format_changes_date(entry.get("aor_signature_date")))
+        ws.cell(row=row, column=CHANGES_SEOR_SIGNATURE_COL, value=_format_changes_date(entry.get("seor_signature_date")))
+        ws.cell(row=row, column=CHANGES_EFFECTIVE_DATE_COL, value=_format_changes_date(entry.get("effective_date")))
+        ws.cell(row=row, column=CHANGES_HCAI_CONCURRENCE_COL, value=entry.get("hcai_concurrence") or "")
+        ws.row_dimensions[row].height = _wrapped_row_height(synopsis)
+        row += 1
+    if not revision_log_rows:
         ws.cell(row=row, column=1, value="No revision log entries found for any selected increment.")
         row += 1
 
@@ -404,24 +531,42 @@ def _write_combined_changes_sheet(ws: Worksheet, increments: list[Any]) -> None:
         ws.cell(row=history_header_row, column=col, value=label).font = _HEADER_FONT
 
     row = history_header_row + 1
-    any_history = False
-    for increment in increments:
-        # Newest first WITHIN each increment's own block -- see module
-        # docstring for why this isn't globally interleaved by date.
-        for i, entry in enumerate(reversed(increment.change_history), start=1):
-            any_history = True
-            detail = _history_entry_detail_text(entry)
-            ws.cell(row=row, column=INCREMENT_COL, value=increment.name)
-            ws.cell(row=row, column=CHANGES_UPDATE_NUM_COL, value=i)
-            ws.cell(row=row, column=CHANGES_DETAIL_COL, value=detail).alignment = _DESCRIPTION_ALIGNMENT
-            ws.cell(row=row, column=CHANGES_SUMMARY_COL, value=_history_entry_summary(entry))
-            ws.cell(row=row, column=CHANGES_OLD_VERSION_COL, value=entry.get("old_version"))
-            ws.cell(row=row, column=CHANGES_NEW_VERSION_COL, value=entry.get("new_version"))
-            ws.cell(row=row, column=CHANGES_UPDATE_DATE_COL, value=(entry.get("timestamp") or "").split("T", 1)[0])
-            ws.row_dimensions[row].height = _wrapped_row_height(detail)
-            row += 1
-    if not any_history:
+    for entry in update_history_rows:
+        detail = _history_entry_detail_text(entry)
+        ws.cell(row=row, column=INCREMENT_COL, value=entry["increment"])
+        ws.cell(row=row, column=CHANGES_UPDATE_NUM_COL, value=entry["update_number"])
+        ws.cell(row=row, column=CHANGES_DETAIL_COL, value=detail).alignment = _DESCRIPTION_ALIGNMENT
+        ws.cell(row=row, column=CHANGES_SUMMARY_COL, value=_history_entry_summary(entry))
+        ws.cell(row=row, column=CHANGES_OLD_VERSION_COL, value=entry.get("old_version"))
+        ws.cell(row=row, column=CHANGES_NEW_VERSION_COL, value=entry.get("new_version"))
+        ws.cell(row=row, column=CHANGES_UPDATE_DATE_COL, value=(entry.get("timestamp") or "").split("T", 1)[0])
+        ws.row_dimensions[row].height = _wrapped_row_height(detail)
+        row += 1
+    if not update_history_rows:
         ws.cell(row=row, column=1, value="No updates confirmed yet for any selected increment.")
+        row += 1
+
+    row += 1  # blank separator row
+    comments_section_row = row
+    ws.cell(row=comments_section_row, column=1, value="Comments").font = _BOLD_FONT
+
+    comments_header_row = comments_section_row + 1
+    comments_headers = ["Increment", "#", "Comment", "Date"]
+    for col, label in enumerate(comments_headers, start=1):
+        ws.cell(row=comments_header_row, column=col, value=label).font = _HEADER_FONT
+
+    comments_rows = build_combined_comments_rows(increments)
+    row = comments_header_row + 1
+    for entry in comments_rows:
+        text = entry.get("text") or ""
+        ws.cell(row=row, column=INCREMENT_COL, value=entry["increment"])
+        ws.cell(row=row, column=CHANGES_COMMENT_NUM_COL, value=entry["comment_number"])
+        ws.cell(row=row, column=CHANGES_COMMENT_TEXT_COL, value=text).alignment = _DESCRIPTION_ALIGNMENT
+        ws.cell(row=row, column=CHANGES_COMMENT_DATE_COL, value=(entry.get("timestamp") or "").split("T", 1)[0])
+        ws.row_dimensions[row].height = _wrapped_row_height(text)
+        row += 1
+    if not comments_rows:
+        ws.cell(row=row, column=1, value="No comments yet for any selected increment.")
 
     ws.column_dimensions[get_column_letter(INCREMENT_COL)].width = 40
     ws.column_dimensions[get_column_letter(2)].width = 10

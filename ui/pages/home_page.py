@@ -50,10 +50,11 @@ LOGO_HEIGHT_PX = 36
 
 
 class HomePage(QWidget):
-    def __init__(self, store: MockDataStore, on_view_data, parent=None):
+    def __init__(self, store: MockDataStore, on_view_data, on_view_combined, parent=None):
         super().__init__(parent)
         self.store = store
         self.on_view_data = on_view_data  # callback(project_name, increment_name)
+        self.on_view_combined = on_view_combined  # callback(project_name, [(increment_name, version), ...])
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 20, 20, 20)
@@ -326,6 +327,10 @@ class HomePage(QWidget):
         self.select_all_checkbox = QCheckBox("Select All")
         self.select_all_checkbox.toggled.connect(self._on_select_all_toggled)
 
+        self.view_combined_button = QPushButton("View Combined Data")
+        self.view_combined_button.setEnabled(False)
+        self.view_combined_button.clicked.connect(self._on_view_combined_data)
+
         self.export_combined_button = QPushButton("Export Combined Report")
         self.export_combined_button.setEnabled(False)
         self.export_combined_button.clicked.connect(self._on_export_combined_report)
@@ -337,6 +342,7 @@ class HomePage(QWidget):
         header_row.addWidget(title)
         header_row.addStretch(1)
         header_row.addWidget(self.select_all_checkbox)
+        header_row.addWidget(self.view_combined_button)
         header_row.addWidget(self.export_combined_button)
         header_row.addWidget(upload_button)
         layout.addLayout(header_row)
@@ -434,10 +440,10 @@ class HomePage(QWidget):
         self.select_all_checkbox.blockSignals(True)
         self.select_all_checkbox.setChecked(False)
         self.select_all_checkbox.blockSignals(False)
-        self._refresh_export_combined_button()
+        self._refresh_combined_buttons()
 
     # ------------------------------------------------------------------
-    # Part 2b: multi-increment selection + combined export
+    # Part 2b: multi-increment selection + combined view/export
     # ------------------------------------------------------------------
     def _on_select_all_toggled(self, checked: bool):
         for row_widgets in self._increment_row_widgets:
@@ -445,7 +451,7 @@ class HomePage(QWidget):
 
     def _on_row_checkbox_toggled(self, row: int, checked: bool):
         self._increment_row_widgets[row]["version_combo"].setEnabled(checked)
-        self._refresh_export_combined_button()
+        self._refresh_combined_buttons()
 
     def _on_row_version_changed(self, row: int, _index: int):
         widgets = self._increment_row_widgets[row]
@@ -453,20 +459,35 @@ class HomePage(QWidget):
         date = widgets["dates_by_version"].get(selected_version, "")
         widgets["last_updated_item"].setText(date)
 
-    def _refresh_export_combined_button(self):
+    def _refresh_combined_buttons(self):
         any_checked = any(w["checkbox"].isChecked() for w in self._increment_row_widgets)
+        self.view_combined_button.setEnabled(any_checked)
         self.export_combined_button.setEnabled(any_checked)
 
-    def _on_export_combined_report(self):
-        project_name = self._current_project_name()
-        # On-screen order (top to bottom), NOT the order checkboxes were
-        # clicked -- simpler, and matches what the user is already
-        # looking at.
-        selected = [
+    def _selected_increments(self) -> list[tuple[str, int]]:
+        """[(increment_name, version), ...] for every checked row, in
+        on-screen order (top to bottom) -- NOT the order checkboxes were
+        clicked -- simpler, and matches what the user is already looking
+        at. Shared by View Combined Data and Export Combined Report, so
+        both always agree on exactly which increments/versions are
+        included.
+        """
+        return [
             (w["increment_name"], w["version_combo"].currentData())
             for w in self._increment_row_widgets
             if w["checkbox"].isChecked()
         ]
+
+    def _on_view_combined_data(self):
+        project_name = self._current_project_name()
+        selected = self._selected_increments()
+        if not selected:
+            return  # button should be disabled anyway; guard regardless
+        self.on_view_combined(project_name, selected)
+
+    def _on_export_combined_report(self):
+        project_name = self._current_project_name()
+        selected = self._selected_increments()
         if not selected:
             return  # button should be disabled anyway; guard regardless
 

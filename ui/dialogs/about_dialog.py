@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
 
 from core.app_version import APP_VERSION, CHANGELOG_SUMMARY
 
-APP_NAME = "Altamirano Builders App"
+APP_NAME = "Altamirano Builders TIO Compliance and Reporting"
 
 
 class AboutDialog(QDialog):

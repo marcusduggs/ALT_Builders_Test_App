@@ -94,6 +94,6 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" `
             "dist/AltamiranoBuildersAPP.exe" `
-            --title "Altamirano Builders App ${{ github.ref_name }}" `
+            --title "Altamirano Builders TIO Compliance and Reporting ${{ github.ref_name }}" `
             --notes-file release_notes.txt `
             --prerelease

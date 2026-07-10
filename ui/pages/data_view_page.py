@@ -30,8 +30,8 @@ Description / Total, grouped and Grand-Totaled exactly as
 core.excel_reader.build_report() computes it. Static: doesn't depend on
 status.json, so it's built once.
 
-Changes tab: two independent, clearly labeled sections in a vertical
-QSplitter (drag to resize either one). "State Revision Log" is the
+Changes tab: three independent, clearly labeled sections in a vertical
+QSplitter (drag to resize any of them). "State Revision Log" is the
 state's own J-Changes sheet content (core.excel_reader.raw_changes_log),
 read-only, one row per revision -- static per version, same as Report.
 "Update History" is THIS APP's own accumulated change_history.json
@@ -52,6 +52,25 @@ source, not two independent reads that could drift). Not truly
 version-specific (it's the increment's whole update timeline, not a
 snapshot of one file), but reloaded on every version switch anyway, same
 as changes_log/report, since it's a cheap JSON read.
+
+"Comments" is the one EDITABLE section on this whole page besides All
+Data's stage cells -- free-text notes a user of this app types directly
+onto this increment (core.project_store.ProjectStore.add_comment/
+update_comment/delete_comment, backed by comments.json), not derived
+from any file and not detected/computed the way Update History is.
+Newest first, like Update History. Unlike change_history.json's
+append-only design, comments support full CRUD: Edit swaps a comment's
+display row for an inline QPlainTextEdit (pre-filled, Save/Cancel --
+not a separate dialog) and calls update_comment(), which edits the
+comment's text IN PLACE while preserving its original id/creation
+timestamp and stamping "edited_timestamp" (shown as a small "(edited
+<date>)" marker) so an edit is visible, never silently indistinguishable
+from the original. Delete removes an entry outright, behind a single
+one-line QMessageBox confirmation -- deliberately much lighter than
+Delete Project/Increment's multi-sentence warnings, since a comment is
+a personal note, not compliance data. Every write (Add/Edit/Delete)
+saves immediately, no separate Save step, same as set_stage_status.
+NOT version-specific, same as Update History.
 
 "Export to Excel" (top right of the header) writes all four tabs -- the
 same cached Increment every tab renders from -- to one .xlsx via
@@ -76,6 +95,8 @@ historical snapshot.
 
 from __future__ import annotations
 
+from functools import partial
+
 from PySide6.QtCore import QModelIndex, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
@@ -85,6 +106,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -847,14 +869,19 @@ class DataViewPage(QWidget):
         self.changes_layout.addWidget(self._build_changes_tab())
 
     def _build_changes_tab(self) -> QSplitter:
-        """Two independent sections in a vertical, drag-to-resize
+        """Three independent sections in a vertical, drag-to-resize
         QSplitter -- see module docstring's "Changes tab" paragraph.
+        State Revision Log and Update History are both read-only;
+        Comments is the one editable section on this whole page besides
+        All Data's stage cells.
         """
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self._build_state_revision_log_section())
         splitter.addWidget(self._build_update_history_section())
+        splitter.addWidget(self._build_comments_section())
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 1)
         return splitter
 
     def _build_state_revision_log_section(self) -> QWidget:
@@ -1084,6 +1111,202 @@ class DataViewPage(QWidget):
             row.setWordWrap(True)
             layout.addWidget(row)
         return group
+
+    def _build_comments_section(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        header = QLabel("Comments")
+        header.setObjectName("sectionTitle")
+        layout.addWidget(header)
+
+        caption = QLabel(
+            "Your own notes on this increment -- saved to this app, not part of the state's file and not "
+            "detected/derived the way Update History above is."
+        )
+        caption.setObjectName("hint")
+        caption.setWordWrap(True)
+        layout.addWidget(caption)
+
+        input_row = QHBoxLayout()
+        self.comment_input = QPlainTextEdit()
+        self.comment_input.setPlaceholderText("Add a comment...")
+        self.comment_input.setMaximumHeight(60)
+        # QPlainTextEdit has no rule in ui/style.qss, so its viewport
+        # falls back to the OS palette's Base color -- dark under a dark
+        # system theme, same root cause as review_dialog.py's QScrollArea
+        # fix elsewhere in this app. Explicit light background/text keeps
+        # it legible regardless of the OS theme.
+        self.comment_input.setStyleSheet("QPlainTextEdit { background: #ffffff; color: #1a1a1a; }")
+        add_button = QPushButton("Add Comment")
+        add_button.setObjectName("primaryButton")
+        add_button.clicked.connect(self._on_add_comment_clicked)
+        input_row.addWidget(self.comment_input, stretch=1)
+        input_row.addWidget(add_button, alignment=Qt.AlignBottom)
+        layout.addLayout(input_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        scroll.viewport().setStyleSheet("background: transparent;")
+        self.comments_list_container = QWidget()
+        self.comments_list_container.setStyleSheet("background: transparent;")
+        self.comments_list_layout = QVBoxLayout(self.comments_list_container)
+        self.comments_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.comments_list_layout.setSpacing(6)
+        self.comments_list_layout.setAlignment(Qt.AlignTop)
+        scroll.setWidget(self.comments_list_container)
+        layout.addWidget(scroll, stretch=1)
+
+        self._refresh_comments_list()
+        return container
+
+    def _refresh_comments_list(self):
+        while self.comments_list_layout.count():
+            child = self.comments_list_layout.takeAt(0)
+            if child.widget():
+                # takeAt() detaches the item from the LAYOUT immediately,
+                # but the widget itself stays visible (just unmanaged)
+                # until deleteLater()'s deferred destruction actually
+                # runs on a later event-loop pass -- for a single
+                # full-container widget swap (as every other *_tab
+                # refresh in this class does) that's invisible, since the
+                # new widget fully covers the old one either way. This
+                # method instead rebuilds many small per-item child
+                # widgets in place, where a still-visible-but-unmanaged
+                # old item would render stacked underneath/behind a new
+                # one at the same layout position -- hide() makes the
+                # removal actually immediate, not just eventually true.
+                child.widget().hide()
+                child.widget().deleteLater()
+
+        entries = list(reversed(self.increment.comments))  # newest first, same as Update History
+        if not entries:
+            empty = QLabel("No comments yet for this increment.")
+            empty.setObjectName("hint")
+            self.comments_list_layout.addWidget(empty)
+        else:
+            for entry in entries:
+                self.comments_list_layout.addWidget(self._build_comment_widget(entry))
+
+    def _build_comment_widget(self, entry: dict) -> QFrame:
+        """Two stacked sub-widgets, only one visible at a time: a normal
+        display row (text + Edit/Delete) and an edit row (a QPlainTextEdit
+        pre-filled with the current text + Save/Cancel), swapped in place
+        by Edit/Cancel -- an inline edit, not a separate dialog, per the
+        "keep it simple" instruction this feature was built to.
+        """
+        frame = QFrame()
+        frame.setObjectName("changeSectionInfo")
+        outer_layout = QVBoxLayout(frame)
+        outer_layout.setContentsMargins(12, 8, 12, 8)
+        outer_layout.setSpacing(6)
+
+        date = (entry.get("timestamp") or "").split("T", 1)[0] or "unknown date"
+        edited_timestamp = entry.get("edited_timestamp")
+        edited_suffix = ""
+        if edited_timestamp:
+            edited_date = edited_timestamp.split("T", 1)[0]
+            edited_suffix = f" <span style='color:#6b7280;'>(edited {edited_date})</span>"
+
+        # --- display row ---
+        display_row = QWidget()
+        display_layout = QHBoxLayout(display_row)
+        display_layout.setContentsMargins(0, 0, 0, 0)
+
+        text_label = QLabel(f"<b>{date}</b>{edited_suffix} &nbsp;&mdash;&nbsp; {entry.get('text', '')}")
+        text_label.setWordWrap(True)
+        text_label.setTextFormat(Qt.RichText)
+        display_layout.addWidget(text_label, stretch=1)
+
+        edit_button = QPushButton("Edit")
+        display_layout.addWidget(edit_button)
+
+        delete_button = QPushButton("Delete")
+        delete_button.setObjectName("dangerButton")
+        delete_button.clicked.connect(partial(self._on_delete_comment_clicked, entry["id"]))
+        display_layout.addWidget(delete_button)
+
+        # --- edit row (hidden until Edit is clicked) ---
+        edit_row = QWidget()
+        edit_row.setVisible(False)
+        edit_layout = QVBoxLayout(edit_row)
+        edit_layout.setContentsMargins(0, 0, 0, 0)
+        edit_layout.setSpacing(4)
+
+        edit_input = QPlainTextEdit(entry.get("text", ""))
+        edit_input.setMaximumHeight(60)
+        edit_input.setStyleSheet("QPlainTextEdit { background: #ffffff; color: #1a1a1a; }")
+        edit_layout.addWidget(edit_input)
+
+        edit_buttons_row = QHBoxLayout()
+        cancel_button = QPushButton("Cancel")
+        save_button = QPushButton("Save")
+        save_button.setObjectName("primaryButton")
+        edit_buttons_row.addStretch(1)
+        edit_buttons_row.addWidget(cancel_button)
+        edit_buttons_row.addWidget(save_button)
+        edit_layout.addLayout(edit_buttons_row)
+
+        def enter_edit_mode():
+            edit_input.setPlainText(entry.get("text", ""))  # discard any unsaved edit from a prior open
+            display_row.setVisible(False)
+            edit_row.setVisible(True)
+            edit_input.setFocus()
+
+        def exit_edit_mode():
+            edit_row.setVisible(False)
+            display_row.setVisible(True)
+
+        def on_save():
+            new_text = edit_input.toPlainText().strip()
+            if not new_text:
+                return  # nothing to save -- same "silently ignore empty" convention Add Comment uses
+            self._on_save_comment_edit(entry["id"], new_text)
+
+        edit_button.clicked.connect(enter_edit_mode)
+        cancel_button.clicked.connect(exit_edit_mode)
+        save_button.clicked.connect(on_save)
+
+        outer_layout.addWidget(display_row)
+        outer_layout.addWidget(edit_row)
+        return frame
+
+    def _on_add_comment_clicked(self):
+        text = self.comment_input.toPlainText().strip()
+        if not text:
+            return  # nothing to save -- silently ignore, no error dialog for an empty comment
+        entry = self.store.add_comment(self.project_name, self.increment.name, text)
+        self.increment.comments.append(entry)
+        self.comment_input.clear()
+        self._refresh_comments_list()
+
+    def _on_save_comment_edit(self, comment_id: str, new_text: str):
+        updated = self.store.update_comment(self.project_name, self.increment.name, comment_id, new_text)
+        if updated is None:
+            return  # comment was deleted from under us (e.g. a second window) -- nothing left to update
+        for i, existing in enumerate(self.increment.comments):
+            if existing["id"] == comment_id:
+                self.increment.comments[i] = updated
+                break
+        self._refresh_comments_list()
+
+    def _on_delete_comment_clicked(self, comment_id: str):
+        answer = QMessageBox.question(
+            self,
+            "Delete Comment",
+            "Delete this comment? This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.store.delete_comment(self.project_name, self.increment.name, comment_id)
+        self.increment.comments = [c for c in self.increment.comments if c["id"] != comment_id]
+        self._refresh_comments_list()
 
     # ------------------------------------------------------------------
     # footer

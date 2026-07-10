@@ -22,7 +22,7 @@ from typing import Any
 
 import pandas as pd
 
-from core import excel_reader, increment_matcher, status_tracker, structure_diff, value_diff
+from core import combined_export, excel_reader, increment_matcher, status_tracker, structure_diff, value_diff
 from core.increment_matcher import MatchResult
 from core.project_store import ProjectStore, VersionRecord
 
@@ -69,6 +69,17 @@ class Increment:
     # every consumer (UI tab, export) reads from the one place this
     # object already serves as, rather than a second live store call.
     change_history: list[dict] = field(default_factory=list)
+    # This app's own comments.json entries (see
+    # core.project_store.ProjectStore.load_comments) -- free-text notes
+    # a user typed directly onto this increment's Changes tab, OLDEST
+    # first (append order), same convention as change_history. NOT
+    # derived from any file, and NOT read-only the way changes_log is:
+    # ui.pages.data_view_page.DataViewPage mutates this list directly
+    # (append on add, remove on delete) after each MockDataStore.
+    # add_comment()/delete_comment() call, same "update in-memory state
+    # immediately, no full reload" pattern set_stage_status() already
+    # uses for stage_status.
+    comments: list[dict] = field(default_factory=list)
     # All Data's bottom totals row (see core.excel_reader.all_data_totals)
     # -- {"Stage 1": ..., ..., "Stage 42": ..., "VCR": ..., "SUM": ...}.
     # Safe to compute once and cache here, unlike Sum Data's totals:
@@ -112,6 +123,53 @@ class Project:
     name: str
     home_folder: str
     increments: list[Increment] = field(default_factory=list)
+
+
+@dataclass
+class CombinedView:
+    """The on-screen "View Combined Data" preview's data -- see
+    ui.pages.combined_data_view_page.CombinedDataViewPage. Built by
+    build_combined_view() below, straight from core.combined_export's
+    public build_combined_*/combine_all_data_totals functions -- the
+    SAME functions core.combined_export.export_combined_report() itself
+    calls -- so this preview and the exported .xlsx can never disagree
+    about which rows appear, in what order, or with what totals. Nothing
+    on this object is ever written to; it exists purely for read-only
+    display.
+    """
+
+    increments: list[Increment]  # in on-screen order -- also what export_combined_report(...) is called with directly
+    all_data_rows: list[dict]
+    all_data_totals: dict
+    sum_data_rows: list[dict]
+    sum_data_totals: dict
+    report_rows: list[dict]
+    revision_log_rows: list[dict]
+    update_history_rows: list[dict]
+    comments_rows: list[dict]
+
+
+def build_combined_view(increments: list[Increment]) -> CombinedView:
+    """Builds the combined preview's data from an already-loaded list of
+    Increment (same list a caller would pass straight to
+    core.combined_export.export_combined_report -- see
+    ui/pages/home_page.py's _on_view_combined_data/_on_export_combined_report,
+    which both build this list the identical way). Does no file I/O
+    itself -- everything here is pure Python over data already in
+    memory, so building the preview is effectively free once the
+    increments themselves are loaded.
+    """
+    sum_data_rows = combined_export.build_combined_sum_data_rows(increments)
+    return CombinedView(
+        increments=increments,
+        all_data_rows=combined_export.build_combined_all_data_rows(increments),
+        all_data_totals=combined_export.combine_all_data_totals(increments),
+        sum_data_rows=sum_data_rows,
+        sum_data_totals=excel_reader.live_sum_data_totals(sum_data_rows),
+        report_rows=combined_export.build_combined_report_rows(increments),
+        comments_rows=combined_export.build_combined_comments_rows(increments),
+        **combined_export.build_combined_changes_data(increments),
+    )
 
 
 @dataclass
@@ -548,6 +606,7 @@ class MockDataStore:
 
         changes_log = excel_reader.raw_changes_log(wb_selected["J-Changes"])
         change_history = self.store.load_change_history(project_name, increment_name)
+        comments = self.store.load_comments(project_name, increment_name)
 
         # last_updated for the DISPLAYED version specifically -- record.last_updated
         # is only ever the latest version's date, which is wrong once
@@ -564,6 +623,7 @@ class MockDataStore:
             report=report_rows,
             changes_log=changes_log,
             change_history=change_history,
+            comments=comments,
             all_data_totals=parsed["all_data_totals"],
         )
 
@@ -577,3 +637,25 @@ class MockDataStore:
         current = self.store.load_status(project_name, increment_name)
         current.setdefault(index, {})[stage] = status
         self.store.save_status(project_name, increment_name, current)
+
+    def add_comment(self, project_name: str, increment_name: str, text: str) -> dict:
+        """Appends one comment and saves immediately -- same "cheap local
+        JSON write, no separate Save step" pattern as set_stage_status.
+        Returns the persisted entry (with its generated id/timestamp) so
+        the caller (ui/pages/data_view_page.py) can append it directly
+        to Increment.comments in place, without a full re-fetch.
+        """
+        return self.store.add_comment(project_name, increment_name, text)
+
+    def update_comment(self, project_name: str, increment_name: str, comment_id: str, new_text: str) -> dict | None:
+        """Edits one comment's text in place and saves immediately --
+        returns the updated entry (id/creation timestamp preserved,
+        edited_timestamp set -- see core.project_store.ProjectStore.
+        update_comment) so the caller can replace the matching entry in
+        Increment.comments in place, without a full re-fetch. None if
+        no comment with this id exists.
+        """
+        return self.store.update_comment(project_name, increment_name, comment_id, new_text)
+
+    def delete_comment(self, project_name: str, increment_name: str, comment_id: str) -> None:
+        self.store.delete_comment(project_name, increment_name, comment_id)
