@@ -33,6 +33,20 @@ Layout:
                                          load_status()/save_status() convert to/from
                                          int transparently, so every OTHER module in
                                          this codebase deals in int stage numbers.
+              change_history.json       [{timestamp, old_version, new_version,
+                                         added_items, removed_items, column_anomalies,
+                                         value_changed_items}, ...] -- append-only, one
+                                         entry per CONFIRMED update (never at review
+                                         time -- a review the user backs out of leaves
+                                         no trace here). Oldest first, same as
+                                         list_version_files(); see
+                                         append_change_history_entry()/
+                                         load_change_history() and
+                                         ui.mock_data.MockDataStore.confirm_update(),
+                                         which builds each entry from the SAME
+                                         ComparisonResult the review screen already
+                                         computed and showed the user, not a
+                                         recomputation.
               files/
                 v1_2026-05-10.xlsm
                 v2_2026-06-26.xlsm       <- current version = highest v#
@@ -173,14 +187,14 @@ def _unique_dir_name(parent: Path, base_name: str) -> str:
     return f"{base_name}-{n}"
 
 
-def _write_json(path: Path, data: dict) -> None:
+def _write_json(path: Path, data: dict | list) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=2))
     tmp.replace(path)  # atomic on the same filesystem -- no half-written file on crash
 
 
-def _read_json(path: Path) -> dict:
+def _read_json(path: Path) -> Any:
     return json.loads(path.read_text())
 
 
@@ -495,3 +509,43 @@ class ProjectStore:
             raise ValueError(f"No increment named {increment_name!r} in project {project_name!r}")
         raw = {index: {str(stage): value for stage, value in stages.items()} for index, stages in status.items()}
         _write_json(self._status_json_path(project.slug, increment.slug), raw)
+
+    # ------------------------------------------------------------------
+    # change history (app-detected diffs between versions, persisted at
+    # confirm time -- see the module docstring's change_history.json entry)
+    # ------------------------------------------------------------------
+    def _change_history_json_path(self, project_slug: str, increment_slug: str) -> Path:
+        return self._increments_dir(project_slug) / increment_slug / "change_history.json"
+
+    def append_change_history_entry(self, project_name: str, increment_name: str, entry: dict[str, Any]) -> None:
+        """Appends one entry to change_history.json -- read, append,
+        write-back-whole-file, same as every other JSON file in this
+        store; never overwrites or drops prior entries. `entry` is
+        caller-built (see ui.mock_data.MockDataStore.confirm_update) from
+        whatever the review screen already computed for this specific
+        update, so this method's only job is persisting it, not deriving
+        it.
+        """
+        project = self.get_project(project_name)
+        increment = self.get_increment(project_name, increment_name) if project else None
+        if project is None or increment is None:
+            raise ValueError(f"No increment named {increment_name!r} in project {project_name!r}")
+        path = self._change_history_json_path(project.slug, increment.slug)
+        history = _read_json(path) if path.exists() else []
+        history.append(entry)
+        _write_json(path, history)
+
+    def load_change_history(self, project_name: str, increment_name: str) -> list[dict[str, Any]]:
+        """All persisted change-history entries for this increment,
+        OLDEST first (the order they were appended, same as
+        list_version_files()) -- callers wanting newest-first (e.g. a
+        Changes-tab "Update History" section) reverse this themselves.
+        """
+        project = self.get_project(project_name)
+        increment = self.get_increment(project_name, increment_name) if project else None
+        if project is None or increment is None:
+            return []
+        path = self._change_history_json_path(project.slug, increment.slug)
+        if not path.exists():
+            return []
+        return _read_json(path)

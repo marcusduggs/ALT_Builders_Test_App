@@ -1,10 +1,10 @@
 """
-Exports a cached ui.mock_data.Increment -- All Data, Sum Data, and
-Report, all loaded together by
+Exports a cached ui.mock_data.Increment -- All Data, Sum Data, Report,
+and Changes, all loaded together by
 ui.mock_data.MockDataStore.get_increment_for_display() -- to a real
-.xlsx workbook with three sheets, named and ordered exactly "All Data",
-"Sum Data", "Report", matching what's on screen in
-ui.pages.data_view_page's three tabs (including any in-memory status
+.xlsx workbook with four sheets, named and ordered exactly "All Data",
+"Sum Data", "Report", "Changes", matching what's on screen in
+ui.pages.data_view_page's four tabs (including any in-memory status
 edits made this session that haven't been re-parsed from disk).
 
 All Data's stage cell marks/colors mirror ui.pages.data_view_page's
@@ -21,6 +21,13 @@ Sum Data's stage cells intentionally look different: literal "Done"/
 _write_sum_data_stage_cell), not All Data's dark-fill "X"/"1" marks --
 Sum Data is a status report, not a re-importable source sheet, so it's
 free to read the way a human expects a status column to read.
+
+Changes is two independent tables stacked in one sheet -- see
+_write_changes_sheet -- State Revision Log (the state's own J-Changes
+content, read-only reference data) then Update History (this app's own
+accumulated change_history.json, newest first). Read-only reference
+data throughout: nothing here round-trips on re-import the way All
+Data's stage marks do.
 """
 
 from __future__ import annotations
@@ -73,6 +80,27 @@ DESCRIPTION_COL = 2
 AGENCY_COL = 3
 STAGE_FIRST_COL = 4
 STAGE_LAST_COL = STAGE_FIRST_COL + STAGE_COUNT - 1
+
+# Changes sheet -- two stacked tables sharing one column grid (see
+# _write_changes_sheet). State Revision Log's long text (Synopsis) and
+# Update History's long text (Detail) deliberately share column B, and
+# Revision Log's three date columns / History's version+date columns
+# share columns D-F, so one set of column widths below serves both
+# tables reasonably rather than needing per-section widths (which
+# openpyxl has no way to express within a single column anyway).
+REVISION_NUM_COL = 1
+SYNOPSIS_COL = 2
+AOR_SIGNATURE_COL = 3
+SEOR_SIGNATURE_COL = 4
+EFFECTIVE_DATE_COL = 5
+HCAI_CONCURRENCE_COL = 6
+
+UPDATE_NUM_COL = 1
+DETAIL_COL = 2
+SUMMARY_COL = 3
+OLD_VERSION_COL = 4
+NEW_VERSION_COL = 5
+UPDATE_DATE_COL = 6
 
 # Descriptions are 3 logical lines (component name, code citation, test
 # description) joined with embedded \n. openpyxl can't auto-fit row height
@@ -300,11 +328,183 @@ def _write_report_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
     ws.column_dimensions[get_column_letter(4)].width = 10
 
 
+# ----------------------------------------------------------------------
+# Changes sheet -- see _write_changes_sheet. The small phrasing helpers
+# below are duplicated from ui/dialogs/review_dialog.py and
+# ui/pages/data_view_page.py rather than imported (core/ doesn't import
+# ui/ anywhere else in this codebase, and _format_total is already
+# duplicated the same way in review_dialog.py/data_view_page.py) --
+# same wording as those two so the export reads exactly like the
+# Changes tab it mirrors.
+# ----------------------------------------------------------------------
+def _first_line(text: str | None) -> str:
+    if not text:
+        return ""
+    return text.split("\n", 1)[0]
+
+
+def _describe_stage_value(value) -> str:
+    if value in (0, None, ""):
+        return "not required"
+    if isinstance(value, str) and value.strip().lower() == "x":
+        return "required (X)"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        n = int(value) if float(value).is_integer() else value
+        return f"{n} test{'s' if n != 1 else ''} required"
+    return str(value)
+
+
+def _describe_change(field_label: str, old_value, new_value) -> str:
+    if field_label.startswith("Stage "):
+        return f"{field_label}: {_describe_stage_value(old_value)} → {_describe_stage_value(new_value)}"
+    old_text = old_value if old_value not in (None, "") else "(blank)"
+    new_text = new_value if new_value not in (None, "") else "(blank)"
+    return f"{field_label}: {old_text!s} → {new_text!s}"
+
+
+def _history_entry_summary(entry: dict) -> str:
+    parts = []
+    added = entry.get("added_items") or []
+    removed = entry.get("removed_items") or []
+    anomalies = entry.get("column_anomalies") or []
+    value_changed = entry.get("value_changed_items") or []
+    if added:
+        parts.append(f"{len(added)} item{'s' if len(added) != 1 else ''} added")
+    if removed:
+        parts.append(f"{len(removed)} item{'s' if len(removed) != 1 else ''} removed")
+    if value_changed:
+        parts.append(f"{len(value_changed)} value{'s' if len(value_changed) != 1 else ''} changed")
+    if anomalies:
+        parts.append(f"{len(anomalies)} column anomal{'y' if len(anomalies) == 1 else 'ies'}")
+    return ", ".join(parts) if parts else "No changes detected"
+
+
+def _history_entry_detail_text(entry: dict) -> str:
+    """Plain-text equivalent of what ui.pages.data_view_page's Changes
+    tab shows when an Update History entry is expanded -- one \\n-joined
+    string (a spreadsheet cell, not a widget tree) built from the SAME
+    persisted fields, in the same order/grouping.
+    """
+    added = entry.get("added_items") or []
+    removed = entry.get("removed_items") or []
+    anomalies = entry.get("column_anomalies") or []
+    value_changed = entry.get("value_changed_items") or []
+
+    if not (added or removed or anomalies or value_changed):
+        return "No changes detected -- this update replaced the file with an item-for-item identical upload."
+
+    lines = []
+    if added:
+        lines.append(f"Added Items ({len(added)}):")
+        lines.extend(f"  {item.get('index')} — {_first_line(item.get('description'))}" for item in added)
+    if removed:
+        lines.append(f"Removed Items ({len(removed)}):")
+        lines.extend(f"  {item.get('index')} — {_first_line(item.get('description'))}" for item in removed)
+    if value_changed:
+        lines.append(f"Values Changed ({len(value_changed)}):")
+        for item in value_changed:
+            lines.append(f"  {item.get('index')} — {_first_line(item.get('description'))}")
+            lines.extend(
+                f"    {_describe_change(field_label, old_v, new_v)}"
+                for field_label, (old_v, new_v) in (item.get("changes") or {}).items()
+            )
+    if anomalies:
+        lines.append(f"Column Anomalies ({len(anomalies)}):")
+        lines.extend(f"  {anomaly}" for anomaly in anomalies)
+    return "\n".join(lines)
+
+
+def _format_changes_date(value) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d")
+    return str(value)
+
+
+def _wrapped_row_height(text: str) -> int:
+    """Same per-line-height convention _DESCRIPTION_ROW_HEIGHT already
+    uses (~15pt/line + padding) -- openpyxl can't auto-fit row height for
+    wrapped text, so this estimates from the text's own embedded
+    newlines (undercounts additional column-width-forced wraps, but is a
+    much better estimate than a flat 3-line height: J-Changes' Synopsis
+    text and Update History's Detail text both routinely run well past
+    3 real lines -- see core.excel_reader.raw_changes_log).
+    """
+    line_count = (text or "").count("\n") + 1
+    return max(_DESCRIPTION_ROW_HEIGHT, line_count * 15 + 10)
+
+
+def _write_changes_sheet(ws: Worksheet, changes_log: list[dict], change_history: list[dict]) -> None:
+    """Two independent tables stacked in one sheet, separated by a blank
+    row -- State Revision Log (the state's own J-Changes content, see
+    core.excel_reader.raw_changes_log) then Update History (this app's
+    accumulated change_history.json) -- matching
+    ui.pages.data_view_page's Changes tab section order, content, and
+    (for Update History) newest-first ordering exactly.
+    """
+    section_row = 1
+    ws.cell(row=section_row, column=1, value="State Revision Log").font = _BOLD_FONT
+
+    header_row = section_row + 1
+    revision_headers = ["Rev #", "Synopsis of Change", "AOR Signature", "SEOR Signature", "Effective Date", "HCAI Concurrence"]
+    for col, label in enumerate(revision_headers, start=1):
+        ws.cell(row=header_row, column=col, value=label).font = _HEADER_FONT
+
+    row = header_row + 1
+    for entry in changes_log:
+        synopsis = entry.get("synopsis") or ""
+        ws.cell(row=row, column=REVISION_NUM_COL, value=entry.get("revision_number"))
+        ws.cell(row=row, column=SYNOPSIS_COL, value=synopsis).alignment = _DESCRIPTION_ALIGNMENT
+        ws.cell(row=row, column=AOR_SIGNATURE_COL, value=_format_changes_date(entry.get("aor_signature_date")))
+        ws.cell(row=row, column=SEOR_SIGNATURE_COL, value=_format_changes_date(entry.get("seor_signature_date")))
+        ws.cell(row=row, column=EFFECTIVE_DATE_COL, value=_format_changes_date(entry.get("effective_date")))
+        ws.cell(row=row, column=HCAI_CONCURRENCE_COL, value=entry.get("hcai_concurrence") or "")
+        ws.row_dimensions[row].height = _wrapped_row_height(synopsis)
+        row += 1
+    if not changes_log:
+        ws.cell(row=row, column=1, value="No revision log entries found in this version's J-Changes sheet.")
+        row += 1
+
+    row += 1  # blank separator row
+    history_section_row = row
+    ws.cell(row=history_section_row, column=1, value="Update History").font = _BOLD_FONT
+
+    history_header_row = history_section_row + 1
+    history_headers = ["Update #", "Detail", "Summary", "Old Version", "New Version", "Date"]
+    for col, label in enumerate(history_headers, start=1):
+        ws.cell(row=history_header_row, column=col, value=label).font = _HEADER_FONT
+
+    row = history_header_row + 1
+    # Newest first -- change_history is stored oldest-first (append
+    # order, see core.project_store), same reversal
+    # ui.pages.data_view_page's Changes tab applies for display.
+    for i, entry in enumerate(reversed(change_history), start=1):
+        detail = _history_entry_detail_text(entry)
+        ws.cell(row=row, column=UPDATE_NUM_COL, value=i)
+        ws.cell(row=row, column=DETAIL_COL, value=detail).alignment = _DESCRIPTION_ALIGNMENT
+        ws.cell(row=row, column=SUMMARY_COL, value=_history_entry_summary(entry))
+        ws.cell(row=row, column=OLD_VERSION_COL, value=entry.get("old_version"))
+        ws.cell(row=row, column=NEW_VERSION_COL, value=entry.get("new_version"))
+        ws.cell(row=row, column=UPDATE_DATE_COL, value=(entry.get("timestamp") or "").split("T", 1)[0])
+        ws.row_dimensions[row].height = _wrapped_row_height(detail)
+        row += 1
+    if not change_history:
+        ws.cell(row=row, column=1, value="No updates confirmed yet for this increment.")
+
+    ws.column_dimensions[get_column_letter(1)].width = 10
+    ws.column_dimensions[get_column_letter(2)].width = 70
+    ws.column_dimensions[get_column_letter(3)].width = 45
+    ws.column_dimensions[get_column_letter(4)].width = 14
+    ws.column_dimensions[get_column_letter(5)].width = 14
+    ws.column_dimensions[get_column_letter(6)].width = 22
+
+
 def export_increment(increment: Any, path: str) -> None:
     """Writes increment (a ui.mock_data.Increment, with all_data/
-    sum_data/report already populated by
+    sum_data/report/changes_log/change_history already populated by
     MockDataStore.get_increment_for_display) to a new .xlsx workbook at
-    path with three sheets, in order: All Data, Sum Data, Report.
+    path with four sheets, in order: All Data, Sum Data, Report, Changes.
     """
     wb = openpyxl.Workbook()
     ws_all_data = wb.active
@@ -316,5 +516,8 @@ def export_increment(increment: Any, path: str) -> None:
 
     ws_report = wb.create_sheet("Report")
     _write_report_sheet(ws_report, increment.report)
+
+    ws_changes = wb.create_sheet("Changes")
+    _write_changes_sheet(ws_changes, increment.changes_log, increment.change_history)
 
     wb.save(path)

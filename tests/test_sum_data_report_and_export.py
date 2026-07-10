@@ -161,7 +161,7 @@ def main():
             failures.append("3: expected at least one continuation row (same agency as the row above) with approval_agency is None")
 
         # ------------------------------------------------------------
-        # 4 -- Export: 3 sheets, right names/order, headers bolded,
+        # 4 -- Export: 4 sheets, right names/order, headers bolded,
         # freeze panes set, data matches what's in the app
         # ------------------------------------------------------------
         print("\n" + "=" * 70)
@@ -173,8 +173,10 @@ def main():
 
         wb_out = openpyxl.load_workbook(export_path)
         print(f"Sheet names: {wb_out.sheetnames}")
-        if wb_out.sheetnames != ["All Data", "Sum Data", "Report"]:
-            failures.append(f"4: sheet names/order should be exactly ['All Data', 'Sum Data', 'Report'], got {wb_out.sheetnames}")
+        if wb_out.sheetnames != ["All Data", "Sum Data", "Report", "Changes"]:
+            failures.append(
+                f"4: sheet names/order should be exactly ['All Data', 'Sum Data', 'Report', 'Changes'], got {wb_out.sheetnames}"
+            )
 
         ws_all = wb_out["All Data"]
         if not ws_all["A1"].font.bold:

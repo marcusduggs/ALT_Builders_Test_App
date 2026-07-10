@@ -17,6 +17,7 @@ reads or writes real files under core.project_store.get_default_data_dir()
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -50,6 +51,24 @@ class Increment:
     # Report row shape: {approval_agency, index, description, total} --
     # static (doesn't depend on status.json), safe to compute once.
     report: list[dict] = field(default_factory=list)
+    # J-Changes' state revision log, verbatim -- see
+    # core.excel_reader.raw_changes_log. Row shape: {revision_number,
+    # synopsis, aor_signature_date, seor_signature_date, effective_date,
+    # hcai_concurrence}. Read-only reference data, same "doesn't feed All
+    # Data/Sum Data/Report" scope boundary as the parser itself; static
+    # per version (whatever this version's file's J-Changes sheet holds),
+    # safe to compute once alongside report.
+    changes_log: list[dict] = field(default_factory=list)
+    # This app's own accumulated change_history.json entries (see
+    # core.project_store.ProjectStore.load_change_history), OLDEST first
+    # (append order) -- callers wanting newest-first (the Changes tab's
+    # Update History section, and core.excel_export's Changes sheet,
+    # which mirrors it) reverse this themselves. NOT actually
+    # version-specific (it's the whole increment's update timeline, not
+    # a snapshot of this one file) -- bundled onto Increment anyway so
+    # every consumer (UI tab, export) reads from the one place this
+    # object already serves as, rather than a second live store call.
+    change_history: list[dict] = field(default_factory=list)
     # All Data's bottom totals row (see core.excel_reader.all_data_totals)
     # -- {"Stage 1": ..., ..., "Stage 42": ..., "VCR": ..., "SUM": ...}.
     # Safe to compute once and cache here, unlike Sum Data's totals:
@@ -390,18 +409,37 @@ class MockDataStore:
     def confirm_update(
         self, project_name: str, increment_name: str, file_path: str, result: ComparisonResult
     ) -> Increment:
-        """Saves file_path as the next version and writes the reconciled
+        """Saves file_path as the next version, writes the reconciled
         status.json (carried_over status from the comparison -- there's no
         merging needed beyond that: any status set via set_stage_status()
         in between simulate_comparison() and confirm_update() would be for
-        the file that's about to be replaced anyway).
+        the file that's about to be replaced anyway), and appends one
+        change_history.json entry recording what this specific update
+        changed -- persisted only now, at CONFIRM time, not when
+        simulate_comparison() first computed `result` (a review the user
+        backs out of leaves no trace). Built directly from `result`'s own
+        fields -- the exact same added/removed/anomaly/value-change data
+        the review screen already showed the user -- never recomputed.
 
-        This copies a file and writes a small JSON file -- no workbook
+        This copies a file and writes small JSON files -- no workbook
         parsing, so it's fast; no need to run it via
         ui.workers.run_with_progress.
         """
         record = self.store.save_new_version(project_name, increment_name, file_path)
         self.store.save_status(project_name, increment_name, result.carried_over_status)
+        self.store.append_change_history_entry(
+            project_name,
+            increment_name,
+            {
+                "timestamp": datetime.now().isoformat(),
+                "old_version": result.current_version,
+                "new_version": record.version,
+                "added_items": result.added_items,
+                "removed_items": result.removed_items,
+                "column_anomalies": result.column_anomalies,
+                "value_changed_items": result.value_changed_items,
+            },
+        )
         return Increment(name=record.name, version=record.version, last_updated=record.last_updated)
 
     # ------------------------------------------------------------------
@@ -508,6 +546,9 @@ class MockDataStore:
             for _, row in parsed["report"].iterrows()
         ]
 
+        changes_log = excel_reader.raw_changes_log(wb_selected["J-Changes"])
+        change_history = self.store.load_change_history(project_name, increment_name)
+
         # last_updated for the DISPLAYED version specifically -- record.last_updated
         # is only ever the latest version's date, which is wrong once
         # `version` selects something older.
@@ -521,6 +562,8 @@ class MockDataStore:
             all_data=rows,
             sum_data=sum_data_rows,
             report=report_rows,
+            changes_log=changes_log,
+            change_history=change_history,
             all_data_totals=parsed["all_data_totals"],
         )
 

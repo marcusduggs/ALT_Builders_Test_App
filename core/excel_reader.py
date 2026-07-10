@@ -310,7 +310,10 @@ IGNORED_BLUE_SHEETS = [
     "G-IOR",
     "H-Plan Review",
     "I-TIO Program Approval",
-    "J-Changes",
+    "J-Changes",  # not ignored entirely -- see raw_changes_log() below,
+    # which parses it independently for read-only display. Still excluded
+    # from parse_workbook/normalize_workbook: it doesn't feed All Data,
+    # Sum Data, or Report, so it stays out of that pipeline.
 ]
 
 # --- grid sheet (B-Tests / C-On-Site / D-Off-Site) column layout ---
@@ -341,6 +344,21 @@ STAGE_NAME_FIRST_ROW = 25
 STAGE_NAME_LAST_ROW = 66
 STAGE_NAME_NUM_COL = 4  # D
 STAGE_NAME_NAME_COL = 6  # F
+
+# --- J-Changes (state's revision log) column layout -- reverse-engineered
+# directly from tests/fixtures/sample_increment.xlsm's J-Changes sheet, same
+# rigor as every other sheet above. A flat row-per-revision table, data rows
+# 7+, NOT the Index/Stage grid the other blue sheets use. Column header text
+# for D..H lives in row 6; column I's header is actually cell I4, merged
+# I4:I6 (spans the header band, not inline with row 6's other headers).
+CHANGES_SHEET = "J-Changes"
+CHANGES_HEADER_ROW = 6
+CHANGES_REVISION_COL = 4        # D -- "REVISION NUMBER", int
+CHANGES_SYNOPSIS_COL = 5        # E -- "SYNOPSIS OF CHANGE", long text
+CHANGES_AOR_SIGNATURE_COL = 6   # F -- AOR Signature (Initial/date), a date value (not split initial/date)
+CHANGES_SEOR_SIGNATURE_COL = 7  # G -- SEOR Signature (Initial/date), same as F
+CHANGES_EFFECTIVE_DATE_COL = 8  # H -- "DATE of Effective Change"
+CHANGES_HCAI_COL = 9            # I -- HCAI FDD Concurrence (Initial/date), free text "name\ndate"; often blank (not yet concurred)
 
 
 @dataclass
@@ -513,6 +531,41 @@ def parse_milestone_sheet(ws) -> list[BlueSheetRecord]:
                 stage_values={stage: None for stage in range(1, STAGE_COUNT + 1)},
                 vcr=ws.cell(row=r, column=MILESTONE_VCR_COL).value,
             )
+        )
+    return records
+
+
+def raw_changes_log(ws) -> list[dict[str, Any]]:
+    """Parses J-Changes: the state's own revision log, read-only reference
+    data that does NOT feed All Data/Sum Data/Report (see IGNORED_BLUE_SHEETS
+    and the module docstring) -- kept as its own independent entry point
+    rather than folded into parse_workbook/normalize_workbook, to preserve
+    that scope boundary.
+
+    Identity-based like parse_milestone_sheet: a row becomes an entry
+    because its Revision Number cell (col D) is a real number, not because
+    of a computed row range -- consistent with this module's general
+    parsing strategy, even though in practice this sheet's revisions are
+    always contiguous.
+
+    HCAI Concurrence (col I) is frequently blank -- a revision awaiting
+    sign-off, not a parsing error -- and is returned as None rather than
+    dropped or defaulted to an empty string.
+    """
+    records = []
+    for r in range(CHANGES_HEADER_ROW + 1, ws.max_row + 1):
+        revision = ws.cell(row=r, column=CHANGES_REVISION_COL).value
+        if not isinstance(revision, (int, float)) or isinstance(revision, bool):
+            continue
+        records.append(
+            {
+                "revision_number": int(revision),
+                "synopsis": _blank_to_none(ws.cell(row=r, column=CHANGES_SYNOPSIS_COL).value),
+                "aor_signature_date": _blank_to_none(ws.cell(row=r, column=CHANGES_AOR_SIGNATURE_COL).value),
+                "seor_signature_date": _blank_to_none(ws.cell(row=r, column=CHANGES_SEOR_SIGNATURE_COL).value),
+                "effective_date": _blank_to_none(ws.cell(row=r, column=CHANGES_EFFECTIVE_DATE_COL).value),
+                "hcai_concurrence": _blank_to_none(ws.cell(row=r, column=CHANGES_HCAI_COL).value),
+            }
         )
     return records
 

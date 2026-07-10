@@ -1,0 +1,149 @@
+<html>
+<head>
+<style>
+  body { background-color: #1a1d24; color: #e8eaf0; font-family: -apple-system, Segoe UI, Arial, sans-serif; font-size: 14px; line-height: 1.5; margin: 24px; }
+  h1 { color: #5b8def; font-size: 22px; margin-top: 28px; margin-bottom: 10px; border-bottom: 1px solid #2f3542; padding-bottom: 6px; }
+  h2 { color: #8fb4f0; font-size: 17px; margin-top: 20px; margin-bottom: 8px; }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0; padding-left: 24px; }
+  li { margin: 4px 0; }
+  table.tip { background-color: #2a2f3a; border-left: 4px solid #5b8def; width: 100%; margin: 14px 0; }
+  table.tip td { padding: 10px 14px; }
+</style>
+</head>
+<body>
+<h1 style="border-bottom:none; font-size:26px; margin-top:0;">Altamirano Builders App — User Guide</h1>
+<h1>What This App Does</h1>
+<p>This app takes the place of the manual work you've been doing in Excel every time the state sends over an updated TIO increment file. Instead of copying data by hand and comparing files line by line, the app does it for you.</p>
+<p>Here's what it handles automatically:</p>
+<ul>
+<li>Reads the state's file and builds your All Data, Sum Data, and Report tabs — the same reports you used to build by hand.</li>
+<li>Compares a newly uploaded file against what you already had, and shows you exactly what's new, removed, or changed.</li>
+<li>Keeps track of which items you've marked Done, and remembers that even when a new file comes in.</li>
+<li>Lets you export a clean, ready-to-use Excel file at any time.</li>
+</ul>
+<h1>Getting Started</h1>
+<h2>Opening the App</h2>
+<p>Double-click the app's icon to open it. The first time you open it, your computer may show a security warning since this is a new program — this is normal and covered in the Setup Guide.</p>
+<h2>Choosing Where Your Data Is Stored</h2>
+<p>The very first time you open the app, it will ask you where you'd like it to store your projects and files. A sensible default location is already filled in — you can just accept it, or click Browse to pick somewhere else (for example, a folder that's backed up or synced elsewhere). You'll only see this the first time; after that, the app remembers your choice.</p>
+<p>If you ever want to change this later, open the menu (☰) in the top-left corner and choose Move App Data. Choosing a new folder will automatically move all of your existing projects and files there — nothing is lost, and you don't need to move anything yourself.</p>
+<h2>The Main Screen</h2>
+<p>At the top of the app, you'll see:</p>
+<ul>
+<li>A menu button (☰) on the far left — see The Menu Button below.</li>
+<li>Your company logo and the word “Project” with a dropdown menu.</li>
+<li>Add, Update, and Delete buttons, for managing your list of projects.</li>
+</ul>
+<p>Below that, once you select a project, you'll see the list of increments for that project.</p>
+<h1>The Menu Button</h1>
+<p>Click the ☰ icon in the top-left corner to open the menu. It has five options:</p>
+<ul>
+<li>About — shows which version of the app you're running, along with a short summary of what's included in that version.</li>
+<li>Help — opens this User Guide.</li>
+<li>Check for Updates — checks whether a newer version of the app is available. If one is, you'll see a Download button that takes you to the download page in your browser; if you're already on the latest version, it'll simply let you know. If the check can't complete (for example, no internet connection), it fails quietly rather than showing an alarming error — just try again later.</li>
+<li>Move App Data — lets you change where your projects and files are stored. Pick a new folder and everything already saved is moved there automatically — nothing is lost, and you don't need to move anything yourself.</li>
+<li>Exit — closes the app.</li>
+</ul>
+<h1>Creating a New Project</h1>
+<ol>
+<li>Click Add next to the Project dropdown.</li>
+<li>Enter the Project Name and the Home Folder (where you'd like the app to look for or store related files).</li>
+<li>Click Submit.</li>
+</ol>
+<p>Your new project will now appear in the dropdown at the top.</p>
+<h1>Uploading a File</h1>
+<p>There's just one button for this: Upload File. Select your project from the dropdown, click Upload File, and choose the Excel file the state sent you (.xlsm or .xlsx).</p>
+<p>You don't need to tell the app whether this is a brand-new increment or an update to one you already have — it figures that out on its own by reading the increment's name directly from the file.</p>
+<h2>What Happens Automatically</h2>
+<ul>
+<li>New increment: if the name in the file doesn't match anything already in the project, the app creates a new increment. Since there's nothing to compare it to yet, it simply confirms the upload and takes you straight to the data view.</li>
+<li>Update to an existing increment: if the name matches one you already have, the app treats this as an update and shows you the review screen (below) before anything is saved.</li>
+<li>Not sure: if the name looks very similar to one you already have but isn't an exact match (for example, a small spelling or punctuation difference from the state), the app will ask you directly: is this an update to the existing one, or a new increment? Just pick whichever is correct.</li>
+</ul>
+<table class="tip"><tr><td><b>Note</b><br/>Every file you upload is saved automatically and never overwritten. Older versions are always kept, so nothing is ever lost.</td></tr></table>
+<h1>Understanding the Report Tabs</h1>
+<p>Once a file is loaded, you'll see four tabs at the top of the data view:</p>
+<ul>
+<li>All Data — every item from the state's file, laid out in one flat table.</li>
+<li>Sum Data — the same items, showing which stages are marked Done or Open, along with a percent-complete column for each item.</li>
+<li>Report — a summary, grouped by agency, with a grand total at the bottom.</li>
+<li>Changes — see below.</li>
+</ul>
+<p>These are the same reports you used to build by hand — the app just builds them for you, every time, from whatever file you upload.</p>
+<p>All Data and Sum Data each end with a bold totals row, summarizing every column above it — the same convention your original spreadsheets have used.</p>
+<h1>The Changes Tab</h1>
+<p>This tab has two sections, shown one below the other:</p>
+<h2>State Revision Log</h2>
+<p>This is the official revision history from the state's own file (Section J), shown exactly as they provided it — the revision number, what changed, who signed off, and the effective date. If a revision hasn't been signed off yet, it shows as Pending rather than a blank space, so it's clear that's a real “not yet” rather than missing information.</p>
+<h2>Update History</h2>
+<p>This is a log the app keeps for you automatically, separate from the state's own revision log above. Every time you confirm an update to an increment, a new entry is added here summarizing exactly what changed — items added, items removed, and values that changed — with the date and which versions were involved. Nothing is ever removed from this history; it simply grows over time as you confirm updates.</p>
+<table class="tip"><tr><td><b>Note</b><br/>This is a record of what YOU confirmed inside the app, which is a different thing from the state's own revision log above — the two sections won't necessarily match each other, and that's expected.</td></tr></table>
+<h1>Viewing a Previous Version</h1>
+<p>Every version you've ever uploaded for an increment is saved, and you can look back at any of them. Next to the increment title in the data view, there's a dropdown listing every version by number and date (for example, v3 (2026-07-06), v2 (2026-07-05), v1 (2026-07-03)) — it opens showing the latest version by default.</p>
+<p>Select a different version from the dropdown to see exactly what that version's data looked like at the time. If you export while looking at an older version, the exported file reflects that version, not the latest one — its file name will show which version it came from.</p>
+<table class="tip"><tr><td><b>Good to know</b><br/>Done/Open marks always reflect your current progress, not what was marked at the time of that older version. If you're looking at anything other than the latest version, a small banner reminds you of this.</td></tr></table>
+<h1>Marking Items as Done</h1>
+<p>In the All Data tab, each item shows its required stages, marked green (Done) or red (Open). Click directly on a stage to toggle it between the two.</p>
+<p>There's no separate Save button — your click is saved right away.</p>
+<p>The Sum Data tab shows this same status for reference, displayed as the words “Done” or “Open” with the same green or red background — this view is read-only; use All Data to actually change a status.</p>
+<h1>Reviewing an Update</h1>
+<p>When Upload File detects that a file is an update to an increment you already have, this is where the app does its most valuable work.</p>
+<h2>The Review Screen</h2>
+<p>Before anything is saved, you'll see a screen comparing your new file to what you had before. It's broken into a few sections:</p>
+<ul>
+<li>New Items — things that appear in the new file but weren't in the old one.</li>
+<li>Removed Items — things that were in the old file but are missing from the new one.</li>
+<li>Column Issues — any sign that the state changed the structure of the file itself (a renamed or missing column, for example).</li>
+<li>Values Changed — items that existed in both files, but where a requirement or test count changed.</li>
+</ul>
+<p>If a section is empty, it simply won't be shown — you'll only see what's actually relevant.</p>
+<p>If any part of the Report total will change as a result of the update, you'll see a note showing the before and after totals, so you know the impact before you commit to anything.</p>
+<h2>Confirm or Discard</h2>
+<ul>
+<li>Confirm &amp; Update — saves the new file as the current version. You'll be asked to confirm once more, since this replaces your working data. Any Done marks you've already made are kept for items that didn't change.</li>
+<li>Cancel/Discard — backs out with no changes made. Safe to click any time, no second confirmation needed.</li>
+</ul>
+<table class="tip"><tr><td><b>Why this matters</b><br/>This screen exists so a new file from the state can never quietly change your data without you seeing it first. Nothing is saved until you explicitly confirm it.</td></tr></table>
+<h1>Exporting to Excel</h1>
+<ol>
+<li>From the data view, click Export to Excel.</li>
+<li>Choose where to save the file and what to name it (the app will suggest a sensible name based on the project and increment).</li>
+<li>The exported file includes all four tabs — All Data, Sum Data, Report, and Changes — formatted and ready to send or print.</li>
+</ol>
+<h1>Combining Multiple Increments Into One Report</h1>
+<p>If you'd like one report that covers several increments at once (for example, everything from INC 2 and INC 3 together), you can combine them from the increment list.</p>
+<ul>
+<li>Each increment in the list has a checkbox next to it. Check the ones you want to include, or use Select All to include everything at once.</li>
+<li>Next to each checked increment, a version dropdown lets you choose which version of that increment to include — it defaults to the latest version, but you can pick an older one if you need to.</li>
+<li>Once at least one increment is checked, the Export Combined Report button becomes available.</li>
+</ul>
+<p>The combined file has the same four tabs as a normal export, with a few differences:</p>
+<ul>
+<li>All Data and Sum Data list every selected increment's items one after another, with a new Increment column on the left so you can always tell which increment each row came from.</li>
+<li>Report shows each increment's totals as its own separate section, followed by one overall Grand Total at the very end covering everything combined.</li>
+<li>Changes lists every selected increment's revision log and update history one after another, also with an Increment column — so you can sort or filter it in Excel however you like.</li>
+</ul>
+<table class="tip"><tr><td><b>Note</b><br/>This is a separate export from the regular single-increment Export to Excel — use whichever fits what you need at the time.</td></tr></table>
+<h1>Where Your Files Are Kept</h1>
+<p>The app automatically keeps two different things in two different places:</p>
+<ul>
+<li>Reports you export — wherever you chose to save them when you clicked Export to Excel. These are yours to move, send, or print freely.</li>
+<li>Everything else (your projects, uploaded files, and progress) — saved automatically in a folder called AltamiranoBuildersAppData, tucked inside your user folder. You don't need to do anything with this folder yourself — the app manages it for you.</li>
+</ul>
+<p>You shouldn't normally need to open that folder. It's mainly useful to know about if you ever want to back up your data, or if you're asked to check something for troubleshooting — see the Setup Guide for exactly where to find it.</p>
+<h1>Deleting a Project</h1>
+<p>Click Delete next to the Project dropdown, and confirm when asked. The project will disappear from your list.</p>
+<table class="tip"><tr><td><b>Good to know</b><br/>Deleting a project doesn't erase it permanently — it's moved to a hidden safety location in case it was a mistake. If you ever need something back after deleting it, don't try to recreate it from scratch — ask for help recovering it first.</td></tr></table>
+<h1>Deleting an Increment</h1>
+<p>If you need to remove a single increment (for example, one created by mistake) without deleting the whole project, click Delete on that increment's row in the increment list, and confirm when asked. Only that increment is removed — the rest of the project is untouched.</p>
+<table class="tip"><tr><td><b>Good to know</b><br/>Just like deleting a project, this isn't permanent — the increment is moved to a hidden safety location rather than erased. Ask for help recovering it if you need something back.</td></tr></table>
+<h1>Tips &amp; Troubleshooting</h1>
+<ul>
+<li>Windows security warning on first run: click “More info,” then “Run anyway.” This is normal for new, unsigned software and only appears the first time.</li>
+<li>Large files can take several seconds to load — you'll see a loading message. This is expected and doesn't mean the app has frozen.</li>
+<li>If something looks wrong after an update, you can always check the review screen's summary again before confirming, or discard the update and try re-uploading the file.</li>
+</ul>
+
+</body>
+</html>

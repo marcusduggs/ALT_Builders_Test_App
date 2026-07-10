@@ -30,7 +30,30 @@ Description / Total, grouped and Grand-Totaled exactly as
 core.excel_reader.build_report() computes it. Static: doesn't depend on
 status.json, so it's built once.
 
-"Export to Excel" (top right of the header) writes all three tabs -- the
+Changes tab: two independent, clearly labeled sections in a vertical
+QSplitter (drag to resize either one). "State Revision Log" is the
+state's own J-Changes sheet content (core.excel_reader.raw_changes_log),
+read-only, one row per revision -- static per version, same as Report.
+"Update History" is THIS APP's own accumulated change_history.json
+(core.project_store.ProjectStore.append_change_history_entry, written
+once per CONFIRMED update -- see ui.mock_data.MockDataStore.
+confirm_update), shown newest-first as collapsed one-line summaries that
+expand on click to the full added/removed/anomaly/value-changed detail --
+reusing the exact same readable-phrasing helpers ui/dialogs/review_dialog.py
+uses for the SAME underlying data at review time (a small amount of
+duplication, matching how _format_total already exists in both files
+rather than being shared -- these are small, page-local formatting
+helpers, not a shared library this codebase has established). Read from
+self.increment.change_history -- NOT re-fetched live from the store here
+-- which ui.mock_data.MockDataStore.get_increment_for_display already
+loads onto every Increment alongside changes_log, so the SAME data this
+tab shows is what core.excel_export's Changes sheet exports (one shared
+source, not two independent reads that could drift). Not truly
+version-specific (it's the increment's whole update timeline, not a
+snapshot of one file), but reloaded on every version switch anyway, same
+as changes_log/report, since it's a cheap JSON read.
+
+"Export to Excel" (top right of the header) writes all four tabs -- the
 same cached Increment every tab renders from -- to one .xlsx via
 core.excel_export. Respects whichever version is currently selected
 (see below), since it always exports self.increment, not "the latest".
@@ -63,6 +86,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -116,6 +141,76 @@ def _format_pct(done: int, total: int) -> str:
     if total == 0:
         return "—"
     return f"{round(100 * done / total)}%"
+
+
+def _format_changes_date(value) -> str:
+    """J-Changes' signature/effective-date columns are real openpyxl
+    datetimes (see core.excel_reader.raw_changes_log) -- ISO date only,
+    matching every other date display in this app (last_updated,
+    uploaded_date, etc.).
+    """
+    if value is None:
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d")
+    return str(value)
+
+
+def _first_line(text: str | None) -> str:
+    """Same helper as ui/dialogs/review_dialog.py's -- duplicated rather
+    than imported, matching how _format_total already exists in both
+    files (small, page-local formatting helpers, not a shared library
+    this codebase has established elsewhere).
+    """
+    if not text:
+        return ""
+    return text.split("\n", 1)[0]
+
+
+def _describe_stage_value(value) -> str:
+    """See ui/dialogs/review_dialog.py's identical helper."""
+    if value in (0, None, ""):
+        return "not required"
+    if isinstance(value, str) and value.strip().lower() == "x":
+        return "required (X)"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        n = int(value) if float(value).is_integer() else value
+        return f"{n} test{'s' if n != 1 else ''} required"
+    return str(value)
+
+
+def _describe_change(field_label: str, old_value, new_value) -> str:
+    """See ui/dialogs/review_dialog.py's identical helper."""
+    if field_label.startswith("Stage "):
+        return f"{field_label}: {_describe_stage_value(old_value)} → {_describe_stage_value(new_value)}"
+    old_text = old_value if old_value not in (None, "") else "(blank)"
+    new_text = new_value if new_value not in (None, "") else "(blank)"
+    return f"{field_label}: {old_text!s} → {new_text!s}"
+
+
+def _history_entry_summary(entry: dict) -> str:
+    """A compact "N added, M removed, K value-changed" line for one
+    change_history.json entry -- same counting/pluralization convention
+    as ui/dialogs/review_dialog.py's ReviewDialog._summary_text (that
+    function summarizes a LIVE ComparisonResult at review time; this one
+    summarizes the PERSISTED dict confirm_update() saved from that same
+    result -- same shape, different point in time, so the phrasing is
+    kept consistent rather than reusing the method directly).
+    """
+    parts = []
+    added = entry.get("added_items") or []
+    removed = entry.get("removed_items") or []
+    anomalies = entry.get("column_anomalies") or []
+    value_changed = entry.get("value_changed_items") or []
+    if added:
+        parts.append(f"{len(added)} item{'s' if len(added) != 1 else ''} added")
+    if removed:
+        parts.append(f"{len(removed)} item{'s' if len(removed) != 1 else ''} removed")
+    if value_changed:
+        parts.append(f"{len(value_changed)} value{'s' if len(value_changed) != 1 else ''} changed")
+    if anomalies:
+        parts.append(f"{len(anomalies)} column anomal{'y' if len(anomalies) == 1 else 'ies'}")
+    return ", ".join(parts) if parts else "No changes detected"
 
 
 def _totals_item(text: str) -> QStandardItem:
@@ -225,10 +320,16 @@ class DataViewPage(QWidget):
         self.report_layout.setContentsMargins(0, 0, 0, 0)
         self._refresh_report_tab()
 
+        self.changes_container = QWidget()
+        self.changes_layout = QVBoxLayout(self.changes_container)
+        self.changes_layout.setContentsMargins(0, 0, 0, 0)
+        self._refresh_changes_tab()
+
         self.tabs = QTabWidget()
         self.tabs.addTab(self.all_data_container, "All Data")
         self.tabs.addTab(self.sum_data_container, "Sum Data")
         self.tabs.addTab(self.report_container, "Report")
+        self.tabs.addTab(self.changes_container, "Changes")
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         outer.addWidget(self.tabs, stretch=1)
@@ -345,6 +446,7 @@ class DataViewPage(QWidget):
         self._refresh_all_data_tab()
         self._refresh_sum_data_tab()
         self._refresh_report_tab()
+        self._refresh_changes_tab()
         self._refresh_footer()
         self.title_label.setText(f"{self.increment.name} — Version {self.increment.version}")
         self.subtitle_label.setText(f"{self.project_name}  ·  Last updated {self.increment.last_updated}")
@@ -733,6 +835,255 @@ class DataViewPage(QWidget):
         table.setColumnWidth(3, 100)
         table.resizeRowsToContents()
         return table
+
+    # ------------------------------------------------------------------
+    # Changes tab
+    # ------------------------------------------------------------------
+    def _refresh_changes_tab(self):
+        while self.changes_layout.count():
+            child = self.changes_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.changes_layout.addWidget(self._build_changes_tab())
+
+    def _build_changes_tab(self) -> QSplitter:
+        """Two independent sections in a vertical, drag-to-resize
+        QSplitter -- see module docstring's "Changes tab" paragraph.
+        """
+        splitter = QSplitter(Qt.Vertical)
+        splitter.addWidget(self._build_state_revision_log_section())
+        splitter.addWidget(self._build_update_history_section())
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        return splitter
+
+    def _build_state_revision_log_section(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        header = QLabel("State Revision Log")
+        header.setObjectName("sectionTitle")
+        layout.addWidget(header)
+
+        caption = QLabel(
+            "The approving agency's own revision log, read directly from this version's J-Changes sheet."
+        )
+        caption.setObjectName("hint")
+        caption.setWordWrap(True)
+        layout.addWidget(caption)
+
+        layout.addWidget(self._build_state_revision_log_table(), stretch=1)
+        return container
+
+    def _build_state_revision_log_table(self) -> QTableWidget:
+        headers = ["Rev #", "Synopsis of Change", "AOR Signature", "SEOR Signature", "Effective Date", "HCAI Concurrence"]
+        rows = self.increment.changes_log
+
+        table = QTableWidget(len(rows), len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.verticalHeader().hide()
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setAlternatingRowColors(False)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setWordWrap(True)
+
+        for row_idx, row_data in enumerate(rows):
+            values = [
+                row_data.get("revision_number"),
+                row_data.get("synopsis") or "",
+                _format_changes_date(row_data.get("aor_signature_date")),
+                _format_changes_date(row_data.get("seor_signature_date")),
+                _format_changes_date(row_data.get("effective_date")),
+                row_data.get("hcai_concurrence") or "",
+            ]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if col_idx == 0:
+                    item.setTextAlignment(Qt.AlignCenter)
+                table.setItem(row_idx, col_idx, item)
+
+        table.setColumnWidth(0, 55)
+        table.setColumnWidth(1, 480)
+        table.setColumnWidth(2, 110)
+        table.setColumnWidth(3, 110)
+        table.setColumnWidth(4, 110)
+        table.setColumnWidth(5, 160)
+        table.resizeRowsToContents()
+        return table
+
+    def _build_update_history_section(self) -> QWidget:
+        """change_history.json entries, most recent first -- see module
+        docstring. NOT rebuilt on tab switch (only on version change via
+        _apply_new_increment, same as Report), since confirmed updates
+        can only happen from the Home page, never while this page is open.
+        """
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        header = QLabel("Update History")
+        header.setObjectName("sectionTitle")
+        layout.addWidget(header)
+
+        caption = QLabel(
+            "Every confirmed update to this increment, most recent first -- this app's own detected changes "
+            "between versions, distinct from the state's revision log above."
+        )
+        caption.setObjectName("hint")
+        caption.setWordWrap(True)
+        layout.addWidget(caption)
+
+        entries = list(reversed(self.increment.change_history))
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        # QScrollArea's viewport auto-fills with the palette's Window color
+        # by default, which follows the OS light/dark setting rather than
+        # this page's own (light) background -- same fix
+        # ui/dialogs/review_dialog.py already applies to its QScrollArea,
+        # for the same reason.
+        scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        scroll.viewport().setStyleSheet("background: transparent;")
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        content_layout = QVBoxLayout(content)
+        content_layout.setSpacing(6)
+        content_layout.setAlignment(Qt.AlignTop)
+
+        if not entries:
+            empty = QLabel("No updates confirmed yet for this increment.")
+            empty.setObjectName("hint")
+            content_layout.addWidget(empty)
+        else:
+            for entry in entries:
+                content_layout.addWidget(self._build_history_entry_widget(entry))
+
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        layout.addWidget(scroll, stretch=1)
+        return container
+
+    def _build_history_entry_widget(self, entry: dict) -> QFrame:
+        """One collapsed-by-default change_history.json entry -- a
+        one-line readable summary (see _history_entry_summary) that
+        expands on click to the same kind of added/removed/anomaly/
+        value-changed detail ui/dialogs/review_dialog.py shows at review
+        time, built from this entry's own persisted fields.
+        """
+        frame = QFrame()
+        frame.setObjectName("changeSectionInfo")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(4)
+
+        date = (entry.get("timestamp") or "").split("T", 1)[0] or "unknown date"
+        old_v, new_v = entry.get("old_version"), entry.get("new_version")
+        summary_text = f"v{old_v} → v{new_v} ({date}): {_history_entry_summary(entry)}"
+
+        toggle = QPushButton(f"▸  {summary_text}")
+        toggle.setObjectName("historyEntryToggle")
+        toggle.setCheckable(True)
+        toggle.setFlat(True)
+        toggle.setStyleSheet("text-align: left; font-weight: 600; border: none;")
+        toggle.setCursor(Qt.PointingHandCursor)
+
+        detail = QWidget()
+        detail.setVisible(False)
+        detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(20, 6, 0, 0)
+        detail_layout.setSpacing(8)
+        self._populate_history_entry_detail(detail_layout, entry)
+
+        def on_toggled(checked: bool):
+            detail.setVisible(checked)
+            arrow = "▾" if checked else "▸"
+            toggle.setText(f"{arrow}  {summary_text}")
+
+        toggle.toggled.connect(on_toggled)
+
+        layout.addWidget(toggle)
+        layout.addWidget(detail)
+        return frame
+
+    def _populate_history_entry_detail(self, layout: QVBoxLayout, entry: dict):
+        added = entry.get("added_items") or []
+        removed = entry.get("removed_items") or []
+        anomalies = entry.get("column_anomalies") or []
+        value_changed = entry.get("value_changed_items") or []
+
+        if not (added or removed or anomalies or value_changed):
+            label = QLabel("No changes detected -- this update replaced the file with an item-for-item identical upload.")
+            label.setObjectName("hint")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            return
+
+        if added:
+            layout.addWidget(self._build_history_item_group(f"Added Items ({len(added)})", added))
+        if removed:
+            layout.addWidget(self._build_history_item_group(f"Removed Items ({len(removed)})", removed))
+        if value_changed:
+            layout.addWidget(self._build_history_value_changed_group(value_changed))
+        if anomalies:
+            layout.addWidget(self._build_history_anomaly_group(anomalies))
+
+    def _build_history_item_group(self, title: str, items: list[dict]) -> QWidget:
+        group = QWidget()
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        header = QLabel(title)
+        header.setStyleSheet("font-weight: 600;")
+        layout.addWidget(header)
+        for item in items:
+            row = QLabel(f"<b>{item.get('index')}</b> &nbsp;&mdash;&nbsp; {_first_line(item.get('description'))}")
+            row.setWordWrap(True)
+            row.setTextFormat(Qt.RichText)
+            layout.addWidget(row)
+        return group
+
+    def _build_history_value_changed_group(self, items: list[dict]) -> QWidget:
+        group = QWidget()
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        header = QLabel(f"Values Changed ({len(items)})")
+        header.setStyleSheet("font-weight: 600;")
+        layout.addWidget(header)
+        for item in items:
+            # JSON round-trips (old, new) tuples to 2-element lists -- see
+            # core.project_store's change_history.json -- unpacking works
+            # identically either way.
+            change_lines = "<br>".join(
+                f"<span style='color:#6b7280;'>{_describe_change(field_label, old_v, new_v)}</span>"
+                for field_label, (old_v, new_v) in (item.get("changes") or {}).items()
+            )
+            row = QLabel(
+                f"<b>{item.get('index')}</b> &nbsp;&mdash;&nbsp; {_first_line(item.get('description'))}"
+                f"<br>{change_lines}"
+            )
+            row.setWordWrap(True)
+            row.setTextFormat(Qt.RichText)
+            layout.addWidget(row)
+        return group
+
+    def _build_history_anomaly_group(self, anomalies: list[str]) -> QWidget:
+        group = QWidget()
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        header = QLabel(f"Column Anomalies ({len(anomalies)})")
+        header.setStyleSheet("font-weight: 600; color: #9b6a00;")
+        layout.addWidget(header)
+        for anomaly in anomalies:
+            row = QLabel(anomaly)
+            row.setWordWrap(True)
+            layout.addWidget(row)
+        return group
 
     # ------------------------------------------------------------------
     # footer
