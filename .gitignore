@@ -1,5 +1,6 @@
 *.txt
 !requirements.txt
+!LICENSE.txt
 *.db
 *.xlsx
 dist/

@@ -19,7 +19,7 @@ from ui.workers import run_with_progress
 class MainWindow(QMainWindow):
     def __init__(self, store: MockDataStore | None = None):
         super().__init__()
-        self.setWindowTitle("Altamirano Builders TIO Compliance and Reporting")
+        self.setWindowTitle("Altamirano Builders TIO Compliance & Reporting")
         self.resize(1240, 800)
 
         self.store = store or MockDataStore()

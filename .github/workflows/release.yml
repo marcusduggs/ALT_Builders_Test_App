@@ -62,8 +62,17 @@ jobs:
           path.write_text(new_text)
           print(f"Stamped APP_VERSION = {version!r} for this build")
 
+      # --add-data "LICENSE.txt;." bundles the license text INSIDE the
+      # frozen exe's payload (extracted to sys._MEIPASS at runtime, same
+      # mechanism as assets/ui above) -- available to the app itself if
+      # it ever wants to display/open it, but NOT something a user
+      # browsing the release page would ever see or find on their own.
+      # The "Create GitHub Release" step below separately attaches the
+      # plain repo-root LICENSE.txt as its OWN downloadable release
+      # asset for that reason -- these two are deliberately redundant,
+      # not the same file serving both purposes.
       - name: Build executable (Windows)
-        run: pyinstaller --onefile --windowed --name AltamiranoBuildersAPP --add-data "assets;assets" --add-data "ui/style.qss;ui" run_app.py
+        run: pyinstaller --onefile --windowed --name AltamiranoBuildersAPP --add-data "assets;assets" --add-data "ui/style.qss;ui" --add-data "LICENSE.txt;." run_app.py
 
       # Reuses CHANGELOG_SUMMARY (core/app_version.py) as the release
       # body verbatim -- the SAME text the About dialog shows -- so
@@ -88,12 +97,19 @@ jobs:
       # prerelease is intentionally hardcoded true -- promotion to a
       # real release stays a manual, deliberate step after real Windows
       # verification, not something this workflow decides on its own.
+      #
+      # LICENSE.txt is attached here as its OWN separate release asset
+      # (not zipped together with the .exe) -- the release page then
+      # lists both files individually, so anyone visiting it sees the
+      # license as a plain, directly downloadable file, not something
+      # buried inside the .exe's own bundle (see the build step above).
       - name: Create GitHub Release and attach the artifact
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ github.ref_name }}" `
             "dist/AltamiranoBuildersAPP.exe" `
+            "LICENSE.txt" `
             --title "Altamirano Builders TIO Compliance and Reporting ${{ github.ref_name }}" `
             --notes-file release_notes.txt `
             --prerelease

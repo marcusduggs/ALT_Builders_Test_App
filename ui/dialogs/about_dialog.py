@@ -10,7 +10,15 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
 
 from core.app_version import APP_VERSION, CHANGELOG_SUMMARY
 
-APP_NAME = "Altamirano Builders TIO Compliance and Reporting"
+APP_NAME = "Altamirano Builders TIO Compliance & Reporting"
+
+# Short form shown in-app; the full license text lives in LICENSE.txt
+# (bundled alongside the built .exe -- see .github/workflows/release.yml),
+# not duplicated here verbatim.
+COPYRIGHT_NOTICE = (
+    "© 2026 Altamirano Builders. All rights reserved. This software is "
+    "proprietary and confidential."
+)
 
 
 class AboutDialog(QDialog):
@@ -22,6 +30,11 @@ class AboutDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
+        # QLabel only parses "&" as a mnemonic marker when the label has a
+        # buddy() set (for Alt+letter keyboard focus-jumping) -- this one
+        # doesn't, so APP_NAME's "&" already renders literally; no escaping
+        # needed (confirmed directly -- an earlier "&&" escape here was
+        # wrong and rendered as a literal double ampersand instead).
         name_label = QLabel(APP_NAME)
         name_label.setObjectName("pageTitle")
 
@@ -32,10 +45,16 @@ class AboutDialog(QDialog):
         changelog_label.setTextFormat(Qt.RichText)
         changelog_label.setWordWrap(True)
 
+        copyright_label = QLabel(COPYRIGHT_NOTICE)
+        copyright_label.setObjectName("hint")
+        copyright_label.setWordWrap(True)
+
         layout.addWidget(name_label)
         layout.addWidget(version_label)
         layout.addSpacing(6)
         layout.addWidget(changelog_label)
+        layout.addSpacing(10)
+        layout.addWidget(copyright_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.accept)  # Close button emits rejected(); this is a pure info dialog
