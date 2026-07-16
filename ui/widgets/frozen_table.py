@@ -50,6 +50,16 @@ class FrozenTableView(QTableView):
         self._apply_frozen_column_visibility()
         self._update_frozen_geometry()
 
+    def setAlternatingRowColors(self, enabled):
+        # frozen_view is a genuinely SEPARATE QTableView (sharing only the
+        # model, not the outer view's own settings) -- without this
+        # override, a caller's setAlternatingRowColors(True) on the outer
+        # FrozenTableView would zebra-stripe the scrolling columns but
+        # leave the pinned (frozen) columns plain white, an obviously
+        # mismatched result.
+        super().setAlternatingRowColors(enabled)
+        self.frozen_view.setAlternatingRowColors(enabled)
+
     def _apply_frozen_column_visibility(self):
         if self.model() is None:
             return

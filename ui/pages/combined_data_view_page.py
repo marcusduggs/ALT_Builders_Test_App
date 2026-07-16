@@ -127,6 +127,7 @@ class CombinedDataViewPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         back_button = QPushButton("< Back to Increments")
+        back_button.setObjectName("secondaryButton")
         back_button.clicked.connect(lambda: self.on_back())
 
         count = len(self.view.increments)
@@ -144,6 +145,7 @@ class CombinedDataViewPage(QWidget):
         title_box.addWidget(subtitle)
 
         export_button = QPushButton("Export to Excel")
+        export_button.setObjectName("primaryButton")
         export_button.clicked.connect(self._on_export_clicked)
 
         layout.addWidget(back_button)
@@ -254,7 +256,7 @@ class CombinedDataViewPage(QWidget):
 
         table = FrozenTableView(frozen_columns=FROZEN_COLUMNS)
         table.setModel(model)
-        table.setAlternatingRowColors(False)
+        table.setAlternatingRowColors(True)
         table.setWordWrap(True)
         table.verticalHeader().hide()
         table.setColumnWidth(0, 220)
@@ -345,7 +347,7 @@ class CombinedDataViewPage(QWidget):
 
         table = FrozenTableView(frozen_columns=FROZEN_COLUMNS)
         table.setModel(model)
-        table.setAlternatingRowColors(False)
+        table.setAlternatingRowColors(True)
         table.setWordWrap(True)
         table.verticalHeader().hide()
         table.setColumnWidth(0, 220)
@@ -375,7 +377,7 @@ class CombinedDataViewPage(QWidget):
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().hide()
         table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.setAlternatingRowColors(False)
+        table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
 
         bold_font = QFont()
@@ -453,7 +455,7 @@ class CombinedDataViewPage(QWidget):
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().hide()
         table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.setAlternatingRowColors(False)
+        table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setWordWrap(True)
 
@@ -685,7 +687,7 @@ class CombinedDataViewPage(QWidget):
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().hide()
         table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.setAlternatingRowColors(False)
+        table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setWordWrap(True)
 

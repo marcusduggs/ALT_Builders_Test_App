@@ -50,6 +50,7 @@ class DataLocationDialog(QDialog):
         path_row = QHBoxLayout()
         self.path_edit = QLineEdit(str(current_location))
         browse_button = QPushButton("Browse...")
+        browse_button.setObjectName("secondaryButton")
         browse_button.clicked.connect(self._on_browse)
         path_row.addWidget(self.path_edit, stretch=1)
         path_row.addWidget(browse_button)

@@ -30,8 +30,8 @@ jobs:
       # `from ui.main_window import MainWindow` only resolves when the
       # repo root is on sys.path (true for `python -m ui.app`, NOT true
       # for a plain script/PyInstaller invocation of ui/app.py itself).
-      # --add-data bundles assets/ (logo.png) AND ui/style.qss into the
-      # exe -- PyInstaller does not bundle arbitrary data files
+      # --add-data bundles assets/ (logo.png, icon.ico) AND ui/style.qss
+      # into the exe -- PyInstaller does not bundle arbitrary data files
       # automatically, and style.qss specifically is NOT picked up just
       # by being a module living next to ui/app.py (see ui/paths.py's
       # get_bundled_path docstring for why __file__-relative lookups
@@ -39,9 +39,16 @@ jobs:
       # separator (macOS/Linux use ':'). Bundled resources are then
       # resolved at runtime via sys._MEIPASS, which is where --onefile
       # extracts them (see ui/paths.py's get_bundled_path/get_asset_path).
+      #
+      # --icon sets the .exe FILE's own icon (Explorer, taskbar pin,
+      # shortcut) -- separate from ui/app.py's app.setWindowIcon() call,
+      # which sets the icon for windows/dialogs WHILE RUNNING (taskbar
+      # button, Alt-Tab). Both are needed; neither substitutes for the
+      # other. Windows-only: --icon expects .icns on macOS, not .ico, and
+      # no Mac build has ever actually been released (see release.yml).
       - name: Build executable (Windows)
         if: runner.os == 'Windows'
-        run: pyinstaller --onefile --windowed --name AltamiranoBuildersAPP --add-data "assets;assets" --add-data "ui/style.qss;ui" run_app.py
+        run: pyinstaller --onefile --windowed --name AltamiranoBuildersAPP --icon "assets/icon.ico" --add-data "assets;assets" --add-data "ui/style.qss;ui" run_app.py
 
       - name: Build executable (Mac)
         if: runner.os == 'macOS'

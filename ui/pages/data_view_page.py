@@ -375,6 +375,7 @@ class DataViewPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         back_button = QPushButton("< Back to Increments")
+        back_button.setObjectName("secondaryButton")
         back_button.clicked.connect(lambda: self.on_back())
 
         self.title_label = QLabel(f"{self.increment.name} — Version {self.increment.version}")
@@ -395,6 +396,7 @@ class DataViewPage(QWidget):
         self.version_combo.currentIndexChanged.connect(self._on_version_changed)
 
         export_button = QPushButton("Export to Excel")
+        export_button.setObjectName("primaryButton")
         export_button.clicked.connect(self._on_export_clicked)
 
         layout.addWidget(back_button)
@@ -611,7 +613,7 @@ class DataViewPage(QWidget):
 
         table = FrozenTableView(frozen_columns=FROZEN_COLUMNS)
         table.setModel(model)
-        table.setAlternatingRowColors(False)
+        table.setAlternatingRowColors(True)
         table.setWordWrap(True)
         table.verticalHeader().hide()  # Index column already identifies each row
         table.setColumnWidth(0, 90)
@@ -787,7 +789,7 @@ class DataViewPage(QWidget):
 
         table = FrozenTableView(frozen_columns=FROZEN_COLUMNS)
         table.setModel(model)
-        table.setAlternatingRowColors(False)
+        table.setAlternatingRowColors(True)
         table.setWordWrap(True)
         table.verticalHeader().hide()
         table.setColumnWidth(0, 90)
@@ -825,7 +827,7 @@ class DataViewPage(QWidget):
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().hide()
         table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.setAlternatingRowColors(False)
+        table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
 
         bold_font = QFont()
@@ -912,7 +914,7 @@ class DataViewPage(QWidget):
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().hide()
         table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.setAlternatingRowColors(False)
+        table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setWordWrap(True)
 
@@ -1223,6 +1225,7 @@ class DataViewPage(QWidget):
         display_layout.addWidget(text_label, stretch=1)
 
         edit_button = QPushButton("Edit")
+        edit_button.setObjectName("secondaryButton")
         display_layout.addWidget(edit_button)
 
         delete_button = QPushButton("Delete")
@@ -1244,6 +1247,7 @@ class DataViewPage(QWidget):
 
         edit_buttons_row = QHBoxLayout()
         cancel_button = QPushButton("Cancel")
+        cancel_button.setObjectName("secondaryButton")
         save_button = QPushButton("Save")
         save_button.setObjectName("primaryButton")
         edit_buttons_row.addStretch(1)

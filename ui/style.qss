@@ -32,7 +32,28 @@ QLabel#hint {
     font-size: 12px;
 }
 
-/* ---------- buttons ---------- */
+/* ---------- buttons ----------
+   Three deliberate tiers, applied consistently across the whole app
+   (increment list, Add/Update Project, Data Location, Review screen,
+   Data View/Combined View, comment editing, etc.) rather than styling
+   screen-by-screen:
+     - primary   (#primaryButton) -- blue, the one main affirmative
+       action per context (Upload File, Export to Excel, View Data,
+       Save, Add Comment, ...).
+     - secondary (#secondaryButton, and the bare QPushButton selector
+       below as its fallback) -- neutral/outlined, supporting actions
+       (Back, Cancel, Browse..., Add/Update Project's toolbar buttons,
+       View Combined Data/Export Combined Report before a selection is
+       made, ...). #secondaryButton exists as an explicit, named tier
+       (matching primary/danger) even though its properties mirror the
+       bare-QPushButton default -- so a button can OPT IN to "this is
+       deliberately neutral" rather than that only ever being true by
+       omission.
+     - destructive (#dangerButton) -- red outline, delete actions.
+       Unchanged from before this pass -- already correct.
+   QPushButton:default (see further below, after these three) covers
+   QDialogButtonBox's automatic default/Enter-triggered button (OK,
+   Close) with ONE broad rule instead of touching every dialog's code. */
 QPushButton {
     background: #ffffff;
     border: 1px solid #ccd0d9;
@@ -66,6 +87,21 @@ QPushButton#primaryButton:pressed {
     background: #234fb0;
 }
 
+QPushButton#secondaryButton {
+    background: #ffffff;
+    border: 1px solid #ccd0d9;
+    border-radius: 6px;
+    padding: 6px 14px;
+    color: #1f2430;
+}
+QPushButton#secondaryButton:hover {
+    background: #f0f2f6;
+    border-color: #aeb4c2;
+}
+QPushButton#secondaryButton:pressed {
+    background: #e4e7ee;
+}
+
 QPushButton#dangerButton {
     background: #ffffff;
     border: 1px solid #d64545;
@@ -73,6 +109,31 @@ QPushButton#dangerButton {
 }
 QPushButton#dangerButton:hover {
     background: #fdeaea;
+}
+
+/* Qt itself marks a QDialogButtonBox's accept-role button (OK) -- or
+   its only button, if there's just one (Close) -- as this dialog's
+   default/Enter-triggered action (confirmed empirically: isDefault()
+   is True on it automatically, with no code change needed in any
+   individual dialog). Styling THAT pseudo-state, rather than each
+   dialog's OK/Close button by hand, means every current and future
+   QDialogButtonBox-based dialog's main action gets primary treatment
+   for free. review_dialog.py's Confirm & Update explicitly opts out
+   via setDefault(False)/setAutoDefault(False) (it already has its own
+   distinct, more prominent #confirmButton treatment for that
+   particular high-stakes confirmation), so this doesn't double up
+   with or override that. */
+QPushButton:default {
+    background: #2f6fed;
+    border: 1px solid #2559c7;
+    color: #ffffff;
+    font-weight: 600;
+}
+QPushButton:default:hover {
+    background: #2a63d6;
+}
+QPushButton:default:pressed {
+    background: #234fb0;
 }
 
 QPushButton#confirmButton {
@@ -117,7 +178,8 @@ QComboBox::drop-down {
     width: 22px;
 }
 
-/* ---------- increment table ---------- */
+/* ---------- data tables (increment list, All Data, Sum Data, Report,
+   Changes) ---------- */
 QTableWidget, QTableView {
     background: #ffffff;
     border: 1px solid #e0e2e8;
@@ -125,6 +187,25 @@ QTableWidget, QTableView {
     gridline-color: #edeef2;
     selection-background-color: #dce6fb;
     selection-color: #12151c;
+    /* Subtle zebra striping -- purely a row-scanning aid for wide/dense
+       tables (All Data's 40+ stage columns especially), NOT a color
+       system of its own: an item with its own EXPLICITLY set background
+       (status cells' green/red, the bottom totals row's tint) always
+       paints that instead, regardless of row parity -- Qt's item
+       delegate treats an explicit per-item background as taking
+       precedence over the view's automatic alternate-row color, so nothing
+       here touches those. Requires setAlternatingRowColors(True) in code
+       too (see e.g. ui/pages/data_view_page.py) -- this property alone
+       has no effect without that. */
+    alternate-background-color: #f7f8fb;
+}
+/* Cell-level hover highlight -- a border, not a background fill,
+   specifically so hovering a colored status cell (All Data's green/red
+   X/1 marks, Sum Data's Done/Open fills) never visually washes out that
+   color; a background-fill hover risks exactly that depending on paint
+   order, a border never does. */
+QTableView::item:hover, QTableWidget::item:hover {
+    border: 1px solid #aeb4c2;
 }
 QHeaderView::section {
     background: #f4f5f7;
@@ -173,18 +254,28 @@ QFrame#reviewHeader QLabel#reviewSubtitle {
 /* Without explicit color rules here, QMenu falls back to the OS's own
    (dark, on this machine) popup background combined with this
    stylesheet's global `* { color: #1f2430 }` (a dark text color meant
-   for light backgrounds) -- dark-on-dark, unreadable. Reuses the same
-   dark-bg/light-text pairing as #footerBar (#12151c / #e8eaf0) rather
-   than inventing a new palette. */
+   for light backgrounds) -- dark-on-dark, unreadable. This USED to be
+   "fixed" by matching a dark-bg/light-text pairing (#footerBar's
+   #12151c/#e8eaf0) -- but that reads as a dark popup floating over an
+   otherwise all-light app, i.e. a visual bug in its own right, not a
+   real design choice. Matching the menu to the app's actual light
+   theme (QFrame#card's #ffffff/#e0e2e8 pairing) is the correct fix
+   instead, since nothing else in this app is dark-themed. The
+   selected-item and disabled-item colors below are UNCHANGED from the
+   earlier accessibility fix (still good contrast against a light
+   background, and #6b7280 is the same muted gray QLabel#hint already
+   uses against light backgrounds elsewhere in this file) -- only the
+   base menu/item background, text, and separator colors moved from
+   dark to light. */
 QMenu {
-    background: #12151c;
-    border: 1px solid #2a2f3a;
-    color: #e8eaf0;
+    background: #ffffff;
+    border: 1px solid #e0e2e8;
+    color: #1f2430;
     padding: 4px;
 }
 QMenu::item {
     background: transparent;
-    color: #e8eaf0;
+    color: #1f2430;
     padding: 6px 24px 6px 12px;
     border-radius: 4px;
 }
@@ -197,7 +288,7 @@ QMenu::item:disabled {
 }
 QMenu::separator {
     height: 1px;
-    background: #2a2f3a;
+    background: #e0e2e8;
     margin: 4px 8px;
 }
 

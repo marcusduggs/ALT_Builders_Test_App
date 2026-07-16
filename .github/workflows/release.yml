@@ -71,8 +71,13 @@ jobs:
       # plain repo-root LICENSE.txt as its OWN downloadable release
       # asset for that reason -- these two are deliberately redundant,
       # not the same file serving both purposes.
+      # --icon sets the .exe FILE's own icon (Explorer, taskbar pin,
+      # shortcut) -- separate from ui/app.py's app.setWindowIcon() call,
+      # which sets the icon for windows/dialogs WHILE RUNNING (taskbar
+      # button, Alt-Tab). Both are needed. assets/icon.ico is a real
+      # multi-size icon (16/32/48/256), not one image resized once.
       - name: Build executable (Windows)
-        run: pyinstaller --onefile --windowed --name AltamiranoBuildersAPP --add-data "assets;assets" --add-data "ui/style.qss;ui" --add-data "LICENSE.txt;." run_app.py
+        run: pyinstaller --onefile --windowed --name AltamiranoBuildersAPP --icon "assets/icon.ico" --add-data "assets;assets" --add-data "ui/style.qss;ui" --add-data "LICENSE.txt;." run_app.py
 
       # Reuses CHANGELOG_SUMMARY (core/app_version.py) as the release
       # body verbatim -- the SAME text the About dialog shows -- so

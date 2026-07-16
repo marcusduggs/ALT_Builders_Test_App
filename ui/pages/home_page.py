@@ -46,7 +46,8 @@ from ui.workers import run_with_progress
 logger = logging.getLogger(__name__)
 
 EXCEL_FILE_FILTER = "TIO Workbooks (*.xlsm *.xlsx)"
-LOGO_HEIGHT_PX = 36
+LOGO_HEIGHT_PX = 48  # see _build_logo_label's docstring for why this isn't 36 anymore
+INCREMENT_TABLE_MAX_HEIGHT_PX = 320  # ~7-8 rows before a scrollbar kicks in -- see _refresh_increment_table
 
 
 class HomePage(QWidget):
@@ -61,7 +62,13 @@ class HomePage(QWidget):
         outer.setSpacing(16)
 
         outer.addWidget(self._build_project_bar())
-        outer.addWidget(self._build_increment_section(), stretch=1)
+        outer.addWidget(self._build_increment_section())
+        # No stretch on the section above -- it now sizes to its own
+        # content (see INCREMENT_TABLE_MAX_HEIGHT_PX/_refresh_increment_table),
+        # so any space left over past that shows the plain page
+        # background (QMainWindow's #f4f5f7) instead of an empty white
+        # card stretched to fill the window.
+        outer.addStretch(1)
 
         self._refresh_project_combo()
 
@@ -91,7 +98,9 @@ class HomePage(QWidget):
         self.project_combo.currentIndexChanged.connect(self._on_project_changed)
 
         add_button = QPushButton("Add")
+        add_button.setObjectName("secondaryButton")
         update_button = QPushButton("Update")
+        update_button.setObjectName("secondaryButton")
         delete_button = QPushButton("Delete")
         delete_button.setObjectName("dangerButton")
         add_button.clicked.connect(self._on_add_project)
@@ -111,6 +120,19 @@ class HomePage(QWidget):
         toolbar height. Returns None if the file is missing/unreadable so
         the header bar just renders without it instead of crashing or
         showing a broken-image icon.
+
+        LOGO_HEIGHT_PX was 36 and looked cramped/squeezed -- investigated
+        before touching it, rather than guessing: scaledToHeight() DOES
+        preserve aspect ratio correctly (not a scaling bug), and
+        logo.png's own content bounding box is within 1px of its full
+        113x144 canvas on every side (not excess transparent margin to
+        crop either). The real cause is simpler than either of those --
+        logo.png is a tall, narrow (portrait) mark, so scaling it to a
+        short, fixed HEIGHT alone necessarily renders a thin, small
+        result (~28px wide at 36px tall) too small to read its own
+        detail clearly. 48px is large enough for the mark to read
+        clearly without visually dominating the row next to the
+        toolbar's buttons/combo box.
         """
         logo_path = get_asset_path("logo.png")
         pixmap = QPixmap(str(logo_path))
@@ -328,10 +350,12 @@ class HomePage(QWidget):
         self.select_all_checkbox.toggled.connect(self._on_select_all_toggled)
 
         self.view_combined_button = QPushButton("View Combined Data")
+        self.view_combined_button.setObjectName("secondaryButton")
         self.view_combined_button.setEnabled(False)
         self.view_combined_button.clicked.connect(self._on_view_combined_data)
 
         self.export_combined_button = QPushButton("Export Combined Report")
+        self.export_combined_button.setObjectName("secondaryButton")
         self.export_combined_button.setEnabled(False)
         self.export_combined_button.clicked.connect(self._on_export_combined_report)
 
@@ -352,6 +376,7 @@ class HomePage(QWidget):
         self.increment_table.verticalHeader().hide()
         self.increment_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.increment_table.setSelectionMode(QTableWidget.NoSelection)
+        self.increment_table.setAlternatingRowColors(True)
         header = self.increment_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -378,6 +403,30 @@ class HomePage(QWidget):
         project_name = self._current_project_name()
         project = self.store.get_project(project_name) if project_name else None
         increments = project.increments if project else []
+
+        # Explicitly tear down any PREVIOUS cell widgets before
+        # repopulating -- this table can legitimately be refreshed more
+        # than once for the same rows (e.g. MainWindow.show_home()'s own
+        # direct call when navigating back from Data View, or re-selecting
+        # an already-selected project), and setCellWidget()'s documented
+        # "replaces and deletes the old widget" behavior does NOT reliably
+        # hold in practice: confirmed by direct reproduction that calling
+        # setCellWidget() again at the same (row, col) leaves the previous
+        # widget alive as an orphaned child of the viewport, invisible at
+        # first (old/new positions nearly coincide) but revealed as a
+        # visually duplicated row the moment a later window resize moves
+        # the Stretch column and only the NEW widgets follow along.
+        # removeCellWidget() alone isn't enough either -- per its own Qt
+        # docs, it only stops the table from TRACKING the widget as that
+        # cell's editor and hands ownership back to the caller; nothing
+        # deletes it automatically. deleteLater() on the retrieved widget
+        # is what actually destroys the orphan.
+        for row in range(self.increment_table.rowCount()):
+            for col in (0, 2, 4):  # the only columns ever given a cell widget -- see below
+                old_widget = self.increment_table.cellWidget(row, col)
+                if old_widget is not None:
+                    self.increment_table.removeCellWidget(row, col)
+                    old_widget.deleteLater()
 
         self._increment_row_widgets = []
         self.increment_table.setRowCount(len(increments))
@@ -436,11 +485,30 @@ class HomePage(QWidget):
             )
 
         self.increment_table.setVisible(bool(increments))
+        self._resize_increment_table_to_content()
         self.empty_state_label.setVisible(not increments)
         self.select_all_checkbox.blockSignals(True)
         self.select_all_checkbox.setChecked(False)
         self.select_all_checkbox.blockSignals(False)
         self._refresh_combined_buttons()
+
+    def _resize_increment_table_to_content(self):
+        """Caps the table's height to its actual content (header + real
+        rows) instead of always stretching to fill the page -- with few
+        increments, that used to leave a large empty white area below
+        the last row (most visible when the window is maximized). Above
+        INCREMENT_TABLE_MAX_HEIGHT_PX, the table keeps its own normal
+        internal scrollbar (a QTableWidget already has one available;
+        nothing extra to wire up) instead of growing further. Recomputed
+        every refresh since row count changes each time.
+        """
+        header_height = self.increment_table.horizontalHeader().height()
+        rows_height = sum(
+            self.increment_table.rowHeight(row) for row in range(self.increment_table.rowCount())
+        )
+        border_allowance = 2 * self.increment_table.frameWidth() + 2
+        natural_height = header_height + rows_height + border_allowance
+        self.increment_table.setMaximumHeight(min(natural_height, INCREMENT_TABLE_MAX_HEIGHT_PX))
 
     # ------------------------------------------------------------------
     # Part 2b: multi-increment selection + combined view/export

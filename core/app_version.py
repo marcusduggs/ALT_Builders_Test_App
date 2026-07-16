@@ -19,7 +19,7 @@ body by that same workflow, so release notes and the About dialog's
 changelog can never drift apart from EACH OTHER either.
 """
 
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.9.0"
 
 CHANGELOG_SUMMARY = """\
 - Track progress per stage with Done/Open status
@@ -40,4 +40,15 @@ preview before exporting
 - See a state's official revision log, this app's own update history, \
 and your own notes together on one Changes tab
 - View the help guide in a built-in window instead of an external PDF \
-viewer"""
+viewer
+- Added a proper app icon, shown in the title bar, taskbar/dock, and \
+Alt-Tab switcher
+- Fixed the menu dropdown rendering in the wrong (dark) theme
+- Sized the logo and the increments table to read clearly instead of \
+looking squeezed or leaving empty space
+- Unified button styling app-wide (primary/secondary/destructive) for \
+a consistent look
+- Added zebra striping and hover highlighting to data tables for \
+easier row scanning
+- Fixed a bug where the increments table could show duplicate Version/\
+Actions controls after navigating back to it"""

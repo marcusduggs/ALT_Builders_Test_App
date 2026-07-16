@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QDialog
 
 from core import app_config, project_store
 from ui.dialogs.data_location_dialog import DataLocationDialog
 from ui.main_window import MainWindow
-from ui.paths import get_bundled_path
+from ui.paths import get_asset_path, get_bundled_path
 
 
 def _ensure_data_location_configured() -> bool:
@@ -41,6 +42,19 @@ def _ensure_data_location_configured() -> bool:
 
 def main():
     app = QApplication(sys.argv)
+
+    # Set at the QApplication level (not per-window) so it becomes the
+    # default icon for EVERY top-level window/dialog this app creates,
+    # not just MainWindow -- this is also what the OS taskbar/dock and
+    # Alt-Tab switcher read while the app is running, distinct from the
+    # --icon PyInstaller bakes into the .exe FILE itself (see
+    # .github/workflows/*.yml) -- both are needed; neither substitutes
+    # for the other. assets/icon.ico is a real multi-size icon (16/32/48/
+    # 256), not one image just resized once -- see the comment on how
+    # it was generated for why a naive re-scale wasn't enough.
+    icon_path = get_asset_path("icon.ico")
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     # get_bundled_path(), not Path(__file__).parent: a frozen PyInstaller
     # build doesn't extract plain .py modules as loose files even under
