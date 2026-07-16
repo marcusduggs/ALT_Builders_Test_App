@@ -14,11 +14,21 @@ they're already looking at top to bottom), with a new "Increment"
 column prepended identifying which increment each row came from. This
 resurrects the real source template's own Inc# column, which this app
 has never populated until now since it only ever handled one increment
-at a time. One combined totals row at the bottom, same convention as
-core.excel_export's single-increment totals row, covering every
-included increment together (see _combine_all_data_totals -- summing
-each increment's own already-computed totals is equivalent to, and
-simpler than, recomputing from raw combined rows).
+at a time. Immediately after each increment's own block of rows, a
+per-increment SUBTOTAL row -- computed by calling the exact same
+single-increment totals functions (core.excel_reader.all_data_totals/
+live_sum_data_totals) once per increment, not a new calculation, see
+build_combined_all_data_rows/build_combined_sum_data_rows -- styled
+distinctly (bold + a light tint) from both regular rows and the final
+Grand Total. One combined GRAND total row at the very bottom, same
+convention as core.excel_export's single-increment totals row,
+covering every included increment together, completely UNCHANGED by
+the addition of subtotals (see combine_all_data_totals -- summing each
+increment's own already-computed totals is equivalent to, and simpler
+than, recomputing from raw combined rows -- and real_rows(), which
+per-increment subtotal marker rows are filtered out by before any
+grand-total recomputation from a flat row list, e.g. Sum Data's live
+totals).
 
 Report: each selected increment's existing grouped/totaled Report,
 completely unchanged (including its own per-increment "Grand Total"
@@ -78,6 +88,7 @@ from __future__ import annotations
 from typing import Any
 
 import openpyxl
+from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -110,6 +121,15 @@ DESCRIPTION_COL = 3
 AGENCY_COL = 4
 STAGE_FIRST_COL = 5
 STAGE_LAST_COL = STAGE_FIRST_COL + STAGE_COUNT - 1
+
+# Per-increment subtotal row -- bold, like the Grand Total row (_TOTALS_FONT/
+# _TOTALS_FILL, imported above), but a deliberately LIGHTER tint (#eef1f7 vs
+# _TOTALS_FILL's #e4e8f0) so the row hierarchy -- regular row < subtotal <
+# Grand Total -- reads clearly at a glance, in both the export and the
+# CombinedDataViewPage UI (see ui/pages/combined_data_view_page.py's matching
+# SUBTOTAL_ROW_BACKGROUND, the same color).
+_SUBTOTAL_FILL = PatternFill(start_color="FFEEF1F7", end_color="FFEEF1F7", fill_type="solid")
+_SUBTOTAL_FONT = Font(bold=True)
 
 # --- Changes sheet column layout -- see _write_combined_changes_sheet.
 # Same +1 shift (leading Increment column) versus
@@ -201,23 +221,69 @@ def combine_all_data_totals(increments: list[Any]) -> dict[str, Any]:
     return combined
 
 
-def build_combined_all_data_rows(increments: list[Any]) -> list[dict]:
-    """[{"increment": name, **row_data}, ...], concatenated across every
-    increment in on-screen order -- exactly the rows/order
-    _write_combined_all_data_sheet writes (see module docstring).
+def real_rows(rows: list[dict]) -> list[dict]:
+    """Filters out per-increment subtotal marker rows (is_subtotal=True),
+    leaving only genuine data rows -- for any caller that needs to
+    recompute an OVERALL total from a flat row list (e.g. Sum Data's
+    live Grand Total, both here and in ui.mock_data.build_combined_view)
+    and must not let a subtotal marker mixed into that same list throw
+    the computation off. A subtotal marker actually contributes nothing
+    even if left in (it carries no "required_stages"/"stage_status"), but
+    filtering explicitly is clearer than relying on that incidental
+    safety.
     """
-    return [{"increment": increment.name, **row_data} for increment in increments for row_data in increment.all_data]
+    return [row for row in rows if not row.get("is_subtotal")]
+
+
+def build_combined_all_data_rows(increments: list[Any]) -> list[dict]:
+    """[{"increment": name, "is_subtotal": False, **row_data}, ...] for
+    every real row, PLUS one subtotal marker row
+    ({"increment": name, "is_subtotal": True, "subtotal_totals": {...}})
+    immediately after each increment's own block -- exactly the rows/
+    order _write_combined_all_data_sheet writes (see module docstring).
+
+    "subtotal_totals" is that SAME increment's own already-computed
+    core.excel_reader.all_data_totals() result (increment.all_data_totals,
+    cached on the Increment at load time) -- not a new calculation, per
+    the module docstring's reuse guarantee. The final combined Grand
+    Total is unaffected by any of this: combine_all_data_totals() below
+    sums increment.all_data_totals directly, never derived from this row
+    list.
+    """
+    rows = []
+    for increment in increments:
+        for row_data in increment.all_data:
+            rows.append({"increment": increment.name, **row_data, "is_subtotal": False})
+        rows.append(
+            {
+                "increment": increment.name,
+                "is_subtotal": True,
+                "subtotal_totals": increment.all_data_totals,
+            }
+        )
+    return rows
 
 
 def build_combined_sum_data_rows(increments: list[Any]) -> list[dict]:
     """Same as build_combined_all_data_rows, but for Sum Data -- each
-    dict additionally carries precomputed "live_status" (per required
-    stage, defaulting any stage with no status.json entry to "Open" --
-    Sum Data's "current state" framing, same as core.excel_export's
-    single-increment version), "open_count", "done_count",
-    "total_count", "pct_complete", so nothing consuming this list ever
-    independently re-derives (and risks disagreeing on) these
-    live-status-dependent values.
+    REAL row dict additionally carries precomputed "live_status" (per
+    required stage, defaulting any stage with no status.json entry to
+    "Open" -- Sum Data's "current state" framing, same as
+    core.excel_export's single-increment version), "open_count",
+    "done_count", "total_count", "pct_complete", so nothing consuming
+    this list ever independently re-derives (and risks disagreeing on)
+    these live-status-dependent values.
+
+    Each SUBTOTAL marker row's "subtotal_totals" is
+    core.excel_reader.live_sum_data_totals() called on that ONE
+    increment's own raw increment.sum_data list -- the exact same
+    function the combined Grand Total (and the single-increment Sum
+    Data tab) already calls, just scoped to one increment at a time
+    instead of the flattened combined list, per the module docstring's
+    reuse guarantee. Use real_rows() before calling
+    live_sum_data_totals() on this function's own output for an OVERALL
+    total -- these marker rows would otherwise sit alongside real ones
+    in the same flat list.
     """
     rows = []
     for increment in increments:
@@ -233,6 +299,7 @@ def build_combined_sum_data_rows(increments: list[Any]) -> list[dict]:
                 {
                     "increment": increment.name,
                     **row_data,
+                    "is_subtotal": False,
                     "live_status": live_status,
                     "open_count": open_count,
                     "done_count": done_count,
@@ -240,6 +307,13 @@ def build_combined_sum_data_rows(increments: list[Any]) -> list[dict]:
                     "pct_complete": pct,
                 }
             )
+        rows.append(
+            {
+                "increment": increment.name,
+                "is_subtotal": True,
+                "subtotal_totals": live_sum_data_totals(increment.sum_data),
+            }
+        )
     return rows
 
 
@@ -322,11 +396,37 @@ def build_combined_comments_rows(increments: list[Any]) -> list[dict]:
     ]
 
 
+def _write_all_data_subtotal_row(ws: Worksheet, row_data: dict) -> None:
+    """One increment's own subtotal row -- bold + a light tint
+    (_SUBTOTAL_FILL), distinct from both regular rows (no fill) and the
+    Grand Total row at the very bottom (_TOTALS_FILL, more saturated).
+    "subtotal_totals" is that increment's OWN already-computed
+    core.excel_reader.all_data_totals() result -- see
+    build_combined_all_data_rows.
+    """
+    totals = row_data["subtotal_totals"]
+    values = [f"{row_data['increment']} — Subtotal", "", "", ""]
+    for stage in range(1, STAGE_COUNT + 1):
+        values.append(totals.get(f"Stage {stage}", 0))
+    values.append(totals.get("VCR", 0))
+    values.append(totals.get("SUM", 0))
+    ws.append(values)
+    for cell in ws[ws.max_row]:
+        cell.font = _SUBTOTAL_FONT
+        cell.fill = _SUBTOTAL_FILL
+        if cell.column > DESCRIPTION_COL:
+            cell.alignment = _STAGE_ALIGNMENT
+
+
 def _write_combined_all_data_sheet(ws: Worksheet, increments: list[Any]) -> None:
     headers = ["Increment", "Index", "Description", "Approval Agency"] + _stage_headers() + ["VCR", "SUM"]
     _write_header(ws, headers)
 
     for row_data in build_combined_all_data_rows(increments):
+        if row_data["is_subtotal"]:
+            _write_all_data_subtotal_row(ws, row_data)
+            continue
+
         required = set(row_data.get("required_stages", []))
         stage_status = row_data.get("stage_status", {})
         values = [
@@ -354,6 +454,9 @@ def _write_combined_all_data_sheet(ws: Worksheet, increments: list[Any]) -> None
             if stage not in required:
                 ws.cell(row=excel_row, column=STAGE_FIRST_COL + stage - 1).alignment = _STAGE_ALIGNMENT
 
+    # Grand Total -- UNCHANGED by the addition of per-increment subtotals
+    # above: sums increment.all_data_totals directly, never derived from
+    # the row list this loop just walked.
     totals = combine_all_data_totals(increments)
     totals_values = ["Totals", "", "", ""]
     for stage in range(1, STAGE_COUNT + 1):
@@ -375,6 +478,33 @@ def _write_combined_all_data_sheet(ws: Worksheet, increments: list[Any]) -> None
     ws.freeze_panes = ws.cell(row=2, column=STAGE_FIRST_COL).coordinate
 
 
+def _write_sum_data_subtotal_row(ws: Worksheet, row_data: dict) -> None:
+    """One increment's own subtotal row -- same bold + light-tint
+    treatment as _write_all_data_subtotal_row. "subtotal_totals" is
+    core.excel_reader.live_sum_data_totals() called on that ONE
+    increment's own raw sum_data list -- see build_combined_sum_data_rows.
+    """
+    totals = row_data["subtotal_totals"]
+    values = [f"{row_data['increment']} — Subtotal", "", "", ""]
+    for stage in range(1, STAGE_COUNT + 1):
+        values.append(totals["stage_open_counts"][stage])
+    values.append(totals["vcr_open_count"])
+    values.append(totals["open_total"])
+    values.append(totals["done_total"])
+    values.append(totals["grand_total"])
+    values.append(totals["pct_complete"])
+    ws.append(values)
+    excel_row = ws.max_row
+    for cell in ws[excel_row]:
+        cell.font = _SUBTOTAL_FONT
+        cell.fill = _SUBTOTAL_FILL
+        if cell.column > DESCRIPTION_COL:
+            cell.alignment = _STAGE_ALIGNMENT
+    pct_col = STAGE_LAST_COL + 5
+    if totals["pct_complete"] is not None:
+        ws.cell(row=excel_row, column=pct_col).number_format = "0%"
+
+
 def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None:
     headers = ["Increment", "Index", "Description", "Approval Agency"] + _stage_headers() + [
         "VCR", "Open", "Done", "Total", "% Complete"
@@ -383,6 +513,10 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
 
     rows = build_combined_sum_data_rows(increments)
     for row_data in rows:
+        if row_data["is_subtotal"]:
+            _write_sum_data_subtotal_row(ws, row_data)
+            continue
+
         live_status = row_data["live_status"]
         pct = row_data["pct_complete"]
 
@@ -415,13 +549,14 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
     total_col = vcr_col + 3
     pct_col = vcr_col + 4
 
-    # Live totals across ALL selected increments' rows together --
-    # recomputed fresh every export, same as the single-increment case
-    # (see core.excel_reader.live_sum_data_totals), never cached. Reads
-    # required_stages/stage_status straight off the enriched rows above
-    # (still present via **row_data) -- the extra keys build_combined_sum_data_rows
-    # added are simply ignored.
-    totals = live_sum_data_totals(rows)
+    # Live GRAND total across ALL selected increments' REAL rows together
+    # -- recomputed fresh every export, same as the single-increment case
+    # (see core.excel_reader.live_sum_data_totals), never cached, and
+    # UNCHANGED by the addition of per-increment subtotals above:
+    # real_rows() strips this function's own subtotal marker rows out of
+    # `rows` first, so they can't be double-counted or otherwise throw
+    # this off.
+    totals = live_sum_data_totals(real_rows(rows))
     totals_values = ["Totals", "", "", ""]
     for stage in range(1, STAGE_COUNT + 1):
         totals_values.append(totals["stage_open_counts"][stage])

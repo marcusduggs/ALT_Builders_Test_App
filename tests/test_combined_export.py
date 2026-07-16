@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import openpyxl
 
-from core import combined_export
+from core import combined_export, excel_reader
 from core.project_store import ProjectStore
 from ui.mock_data import MockDataStore
 
@@ -138,6 +138,100 @@ def main():
         print(f"Sum Data rows use INC2 name: {inc2.name in sum_increment_values}, INC3 name: {inc3.name in sum_increment_values}")
         if inc2.name not in sum_increment_values or inc3.name not in sum_increment_values:
             failures.append("1b: Sum Data should contain rows from both increments")
+
+        # ------------------------------------------------------------
+        # 1b2 -- All Data/Sum Data per-increment SUBTOTAL rows: exactly
+        # one immediately after each increment's own block (contiguity),
+        # its numbers EXACTLY matching that increment's own independent
+        # single-increment totals (inc2_v1.all_data_totals /
+        # excel_reader.live_sum_data_totals(inc*.sum_data) -- the SAME
+        # values that increment's own single-increment Data View/export
+        # already show), and the final Grand Total ("Totals") row
+        # UNCHANGED/correct.
+        # ------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("1b2 -- per-increment subtotal rows (All Data / Sum Data)")
+        print("=" * 70)
+
+        all_data_col1 = [ws_all.cell(row=r, column=1).value for r in range(2, ws_all.max_row + 1)]
+        inc2_subtotal_label = f"{inc2.name} — Subtotal"
+        inc3_subtotal_label = f"{inc3.name} — Subtotal"
+
+        # Contiguity: subtotal label immediately follows the last real
+        # INC2 row, and immediately precedes INC3's first real row.
+        inc2_subtotal_idx = all_data_col1.index(inc2_subtotal_label) if inc2_subtotal_label in all_data_col1 else None
+        print(f"INC2 All Data subtotal row found at offset {inc2_subtotal_idx}")
+        if inc2_subtotal_idx is None:
+            failures.append(f"1b2: no All Data subtotal row found for INC2 ({inc2_subtotal_label!r})")
+        else:
+            if all_data_col1[inc2_subtotal_idx - 1] != inc2.name:
+                failures.append("1b2: All Data INC2 subtotal row is not immediately preceded by an INC2 real row")
+            if all_data_col1[inc2_subtotal_idx + 1] != inc3.name:
+                failures.append("1b2: All Data INC2 subtotal row is not immediately followed by INC3's first real row")
+
+        # Correctness: read the subtotal row's numeric cells back and
+        # compare against inc2_v1.all_data_totals directly (Step 1's
+        # reuse guarantee -- these should be the IDENTICAL dict values,
+        # not just numerically equal by coincidence).
+        if inc2_subtotal_idx is not None:
+            excel_row = inc2_subtotal_idx + 2  # +1 header, +1 back to 1-indexed
+            stage_count = excel_reader.STAGE_COUNT
+            subtotal_values = {
+                f"Stage {s}": ws_all.cell(row=excel_row, column=4 + s).value for s in range(1, stage_count + 1)
+            }
+            subtotal_values["VCR"] = ws_all.cell(row=excel_row, column=4 + stage_count + 1).value
+            subtotal_values["SUM"] = ws_all.cell(row=excel_row, column=4 + stage_count + 2).value
+            print(f"INC2 All Data subtotal SUM={subtotal_values['SUM']} vs ground truth={inc2_v1.all_data_totals.get('SUM')}")
+            if subtotal_values != inc2_v1.all_data_totals:
+                failures.append(
+                    f"1b2: INC2's All Data subtotal row does NOT exactly match inc2_v1.all_data_totals (the same "
+                    f"increment's own single-increment totals) -- got {subtotal_values}, expected {inc2_v1.all_data_totals}"
+                )
+
+        # Grand Total unchanged: still the very last row, still correct.
+        expected_all_data_grand_total_sum = inc2_v1.all_data_totals.get("SUM", 0) + inc3_latest.all_data_totals.get("SUM", 0)
+        actual_all_data_grand_total_sum = ws_all.cell(row=ws_all.max_row, column=4 + excel_reader.STAGE_COUNT + 2).value
+        print(f"All Data Grand Total SUM: {actual_all_data_grand_total_sum} (expected {expected_all_data_grand_total_sum})")
+        if actual_all_data_grand_total_sum != expected_all_data_grand_total_sum:
+            failures.append(
+                f"1b2: All Data Grand Total SUM should be {expected_all_data_grand_total_sum}, "
+                f"got {actual_all_data_grand_total_sum}"
+            )
+
+        # Same contiguity + correctness check for Sum Data.
+        sum_data_col1 = [ws_sum.cell(row=r, column=1).value for r in range(2, ws_sum.max_row + 1)]
+        inc2_sum_subtotal_idx = sum_data_col1.index(inc2_subtotal_label) if inc2_subtotal_label in sum_data_col1 else None
+        print(f"INC2 Sum Data subtotal row found at offset {inc2_sum_subtotal_idx}")
+        if inc2_sum_subtotal_idx is None:
+            failures.append(f"1b2: no Sum Data subtotal row found for INC2 ({inc2_subtotal_label!r})")
+        else:
+            if sum_data_col1[inc2_sum_subtotal_idx - 1] != inc2.name:
+                failures.append("1b2: Sum Data INC2 subtotal row is not immediately preceded by an INC2 real row")
+            if sum_data_col1[inc2_sum_subtotal_idx + 1] != inc3.name:
+                failures.append("1b2: Sum Data INC2 subtotal row is not immediately followed by INC3's first real row")
+
+            inc2_sum_ground_truth = excel_reader.live_sum_data_totals(inc2_v1.sum_data)
+            excel_row = inc2_sum_subtotal_idx + 2
+            stage_count = excel_reader.STAGE_COUNT
+            actual_grand_total = ws_sum.cell(row=excel_row, column=4 + stage_count + 4).value
+            print(f"INC2 Sum Data subtotal grand_total={actual_grand_total} vs ground truth={inc2_sum_ground_truth['grand_total']}")
+            if actual_grand_total != inc2_sum_ground_truth["grand_total"]:
+                failures.append(
+                    f"1b2: INC2's Sum Data subtotal row's grand_total does NOT match "
+                    f"excel_reader.live_sum_data_totals(inc2_v1.sum_data) -- got {actual_grand_total}, "
+                    f"expected {inc2_sum_ground_truth['grand_total']}"
+                )
+
+        expected_sum_data_grand_total = (
+            excel_reader.live_sum_data_totals(inc2_v1.sum_data)["grand_total"]
+            + excel_reader.live_sum_data_totals(inc3_latest.sum_data)["grand_total"]
+        )
+        actual_sum_data_grand_total = ws_sum.cell(row=ws_sum.max_row, column=4 + excel_reader.STAGE_COUNT + 4).value
+        print(f"Sum Data Grand Total: {actual_sum_data_grand_total} (expected {expected_sum_data_grand_total})")
+        if actual_sum_data_grand_total != expected_sum_data_grand_total:
+            failures.append(
+                f"1b2: Sum Data Grand Total should be {expected_sum_data_grand_total}, got {actual_sum_data_grand_total}"
+            )
 
         # ------------------------------------------------------------
         # 1c -- Report: two separate labeled sections, each ending in
@@ -264,8 +358,10 @@ def main():
         raise SystemExit(1)
     else:
         print("RESULT: PASS -- combined All Data/Sum Data/Report/Changes all correct: on-screen order, Increment "
-              "column, non-latest version honored, exactly one distinctly-labeled overall Grand Total, and "
-              "Changes' flattened (not sectioned) State Revision Log/Update History tables both correct")
+              "column, non-latest version honored, exactly one distinctly-labeled overall Grand Total, "
+              "Changes' flattened (not sectioned) State Revision Log/Update History tables both correct, and "
+              "All Data/Sum Data's per-increment subtotal rows are contiguous, exactly match each increment's own "
+              "independent single-increment totals, and leave the final Grand Total unchanged")
 
 
 if __name__ == "__main__":

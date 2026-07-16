@@ -165,7 +165,12 @@ def build_combined_view(increments: list[Increment]) -> CombinedView:
         all_data_rows=combined_export.build_combined_all_data_rows(increments),
         all_data_totals=combined_export.combine_all_data_totals(increments),
         sum_data_rows=sum_data_rows,
-        sum_data_totals=excel_reader.live_sum_data_totals(sum_data_rows),
+        # real_rows() strips this list's per-increment subtotal marker
+        # rows out first -- same reason core.combined_export's own
+        # writer does, see its module docstring: this OVERALL total must
+        # not be thrown off by (or double-count) a subtotal marker
+        # sitting alongside the real rows in the same flat list.
+        sum_data_totals=excel_reader.live_sum_data_totals(combined_export.real_rows(sum_data_rows)),
         report_rows=combined_export.build_combined_report_rows(increments),
         comments_rows=combined_export.build_combined_comments_rows(increments),
         **combined_export.build_combined_changes_data(increments),

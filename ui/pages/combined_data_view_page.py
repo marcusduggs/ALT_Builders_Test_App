@@ -75,6 +75,15 @@ from ui.workers import run_with_progress
 FROZEN_COLUMNS = 4  # Increment, Index, Description, Approval Agency
 RECENTLY_ADDED_COLOR = QColor("#eaf7ee")
 
+# Per-increment subtotal row -- bold, like the bottom Grand Total row
+# (ui.pages.data_view_page.TOTALS_ROW_BACKGROUND, #e4e8f0), but a
+# deliberately LIGHTER tint so the row hierarchy -- regular row <
+# subtotal < Grand Total -- reads clearly at a glance. Same color as
+# core.combined_export's matching _SUBTOTAL_FILL (#eef1f7), so the
+# preview and the exported .xlsx look the same, not just contain the
+# same data.
+SUBTOTAL_ROW_BACKGROUND = QColor("#eef1f7")
+
 _SUM_DATA_STATUS_FILL = {
     "Done": QColor("#C6EFCE"),
     "Open": QColor("#FFC7CE"),
@@ -83,6 +92,22 @@ _SUM_DATA_STATUS_TEXT_COLOR = {
     "Done": QColor("#006100"),
     "Open": QColor("#9C0006"),
 }
+
+
+def _subtotal_item(text: str) -> QStandardItem:
+    """One cell of a per-increment subtotal row -- bold + a light tint,
+    same treatment as ui.pages.data_view_page._totals_item (the bottom
+    Grand Total row here reuses that function directly), just a
+    different, lighter background so the two are visually distinct.
+    """
+    item = QStandardItem(text)
+    item.setTextAlignment(Qt.AlignCenter)
+    item.setEditable(False)
+    item.setBackground(SUBTOTAL_ROW_BACKGROUND)
+    font = item.font()
+    font.setBold(True)
+    item.setFont(font)
+    return item
 
 
 class CombinedDataViewPage(QWidget):
@@ -202,6 +227,20 @@ class CombinedDataViewPage(QWidget):
         model.setHorizontalHeaderLabels(headers)
 
         for row_idx, row_data in enumerate(rows):
+            if row_data["is_subtotal"]:
+                totals = row_data["subtotal_totals"]
+                items = [
+                    _subtotal_item(f"{row_data['increment']} — Subtotal"),
+                    _subtotal_item(""), _subtotal_item(""), _subtotal_item(""),
+                ]
+                for stage in range(1, STAGE_COUNT + 1):
+                    items.append(_subtotal_item(_format_total(totals.get(f"Stage {stage}", 0))))
+                items.append(_subtotal_item(_format_total(totals.get("VCR", 0))))
+                items.append(_subtotal_item(_format_total(totals.get("SUM", 0))))
+                for col_idx, item in enumerate(items):
+                    model.setItem(row_idx, col_idx, item)
+                continue
+
             is_recently_added = bool(row_data.get("recently_added"))
 
             increment_item = QStandardItem(row_data["increment"])
@@ -287,6 +326,23 @@ class CombinedDataViewPage(QWidget):
         model.setHorizontalHeaderLabels(headers)
 
         for row_idx, row_data in enumerate(rows):
+            if row_data["is_subtotal"]:
+                totals = row_data["subtotal_totals"]
+                items = [
+                    _subtotal_item(f"{row_data['increment']} — Subtotal"),
+                    _subtotal_item(""), _subtotal_item(""), _subtotal_item(""),
+                ]
+                for stage in range(1, STAGE_COUNT + 1):
+                    items.append(_subtotal_item(str(totals["stage_open_counts"][stage])))
+                items.append(_subtotal_item(str(totals["vcr_open_count"])))
+                items.append(_subtotal_item(str(totals["open_total"])))
+                items.append(_subtotal_item(str(totals["done_total"])))
+                items.append(_subtotal_item(str(totals["grand_total"])))
+                items.append(_subtotal_item(_format_pct(totals["done_total"], totals["grand_total"])))
+                for col_idx, item in enumerate(items):
+                    model.setItem(row_idx, col_idx, item)
+                continue
+
             increment_item = QStandardItem(row_data["increment"])
             index_item = QStandardItem(str(row_data["index"]))
             description_item = QStandardItem(row_data.get("description") or "")
@@ -721,11 +777,15 @@ class CombinedDataViewPage(QWidget):
         layout.setContentsMargins(14, 4, 14, 4)
         layout.setSpacing(24)
 
-        total_items = len(self.view.all_data_rows)
+        # real_rows() excludes the per-increment subtotal marker rows
+        # now mixed into all_data_rows -- otherwise this count would be
+        # inflated by one per included increment.
+        real_all_data_rows = combined_export.real_rows(self.view.all_data_rows)
+        total_items = len(real_all_data_rows)
         total_label = QLabel(f"Total items: {total_items}")
         layout.addWidget(total_label)
 
-        needing_status = sum(1 for row in self.view.all_data_rows if row.get("needs_status"))
+        needing_status = sum(1 for row in real_all_data_rows if row.get("needs_status"))
         needing_label = QLabel(f"Needing status: {needing_status}" if needing_status else "Needing status: none")
         if needing_status:
             needing_label.setObjectName("footerHighlight")
