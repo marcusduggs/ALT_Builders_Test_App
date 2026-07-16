@@ -19,7 +19,7 @@ body by that same workflow, so release notes and the About dialog's
 changelog can never drift apart from EACH OTHER either.
 """
 
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.10.0"
 
 CHANGELOG_SUMMARY = """\
 - Track progress per stage with Done/Open status
@@ -51,4 +51,6 @@ a consistent look
 - Added zebra striping and hover highlighting to data tables for \
 easier row scanning
 - Fixed a bug where the increments table could show duplicate Version/\
-Actions controls after navigating back to it"""
+Actions controls after navigating back to it
+- Combined All Data/Sum Data now show a subtotal after each \
+increment's items, in addition to the overall Grand Total"""
