@@ -19,7 +19,7 @@ body by that same workflow, so release notes and the About dialog's
 changelog can never drift apart from EACH OTHER either.
 """
 
-APP_VERSION = "0.10.0"
+APP_VERSION = "0.11.0"
 
 CHANGELOG_SUMMARY = """\
 - Track progress per stage with Done/Open status
@@ -53,4 +53,10 @@ easier row scanning
 - Fixed a bug where the increments table could show duplicate Version/\
 Actions controls after navigating back to it
 - Combined All Data/Sum Data now show a subtotal after each \
-increment's items, in addition to the overall Grand Total"""
+increment's items, in addition to the overall Grand Total
+- Added a header with the app logo and title above the Project row
+- Increments now sort numerically by increment number (e.g. INC 9 \
+before INC 10) instead of an arbitrary order
+- Updated the copyright notice's wording (About dialog and LICENSE.txt)
+- Fixed the Project dropdown and tooltips rendering in the wrong \
+(dark) theme"""
