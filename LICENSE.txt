@@ -1,4 +1,4 @@
-Copyright © 2026 Altamirano Builders. All rights reserved.
+© 2026 Altamirano Builders. All rights reserved. No part of this software may be reproduced, distributed, or transmitted in any form or by any means without the express written permission of the copyright holder.
 
 This software and its accompanying documentation are the proprietary and confidential property of Altamirano Builders. Unauthorized copying, distribution, modification, reverse engineering, or use of this software, in whole or in part, without the express written permission of Altamirano Builders is strictly prohibited.
 

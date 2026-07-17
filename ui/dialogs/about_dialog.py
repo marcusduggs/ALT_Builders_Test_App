@@ -16,8 +16,10 @@ APP_NAME = "Altamirano Builders TIO Compliance & Reporting"
 # (bundled alongside the built .exe -- see .github/workflows/release.yml),
 # not duplicated here verbatim.
 COPYRIGHT_NOTICE = (
-    "© 2026 Altamirano Builders. All rights reserved. This software is "
-    "proprietary and confidential."
+    "© 2026 Altamirano Builders. All rights reserved. No part of this "
+    "software may be reproduced, distributed, or transmitted in any form "
+    "or by any means without the express written permission of the "
+    "copyright holder."
 )
 
 
