@@ -8,6 +8,25 @@ QMainWindow, QDialog {
     background: #f4f5f7;
 }
 
+/* ---------- header / masthead (HomePage only, see _build_header) ----------
+   Sits flush against the window's top/left/right edges (HomePage's outer
+   layout has zero margins specifically so this can be full-width, not
+   inset like the cards below it). A light tint of #primaryButton's blue
+   (#2f6fed) plus a solid bottom border in that same blue -- reusing the
+   existing palette rather than a new color -- gives it real visual
+   weight as a distinct band, not just larger text on the plain page
+   background. */
+QFrame#appHeader {
+    background: #e8f0fd;
+    border: none;
+    border-bottom: 3px solid #2f6fed;
+}
+QLabel#mastheadTitle {
+    font-size: 22px;
+    font-weight: 700;
+    color: #12151c;
+}
+
 /* ---------- generic panels/cards ---------- */
 QFrame#card {
     background: #ffffff;

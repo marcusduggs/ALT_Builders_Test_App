@@ -177,6 +177,20 @@ def _slugify(name: str) -> str:
     return slug or "untitled"
 
 
+_INCREMENT_NUMBER_RE = re.compile(r"^\s*INC\s+(\d+)", re.IGNORECASE)
+
+
+def _increment_sort_key(name: str) -> tuple:
+    """See list_increments()'s comment -- numbered increments ("INC 2 -
+    ...") sort first, in numeric order (so INC 9 sorts before INC 10,
+    unlike a plain string sort); anything else sorts after, alphabetically.
+    """
+    match = _INCREMENT_NUMBER_RE.match(name)
+    if match:
+        return (0, int(match.group(1)), name)
+    return (1, 0, name)
+
+
 def _unique_slug(base_slug: str, taken: set[str]) -> str:
     if base_slug not in taken:
         return base_slug
@@ -349,7 +363,18 @@ class ProjectStore:
                     slug=increment_dir.name,
                 )
             )
-        return records
+        # _increment_dirs() reflects raw filesystem iterdir() order, which
+        # is arbitrary (not upload order, not alphabetical) and can vary
+        # by OS/filesystem -- so without this, the increment list's order
+        # isn't just "not numeric", it's not even stable. Every increment
+        # name in practice starts with "INC <number>" (the record name
+        # convention read by core.excel_reader.get_record_name()), so sort
+        # on that leading number; anything that doesn't match the pattern
+        # sorts after all numbered increments, alphabetically, rather than
+        # raising -- this is a display-order convenience, not the
+        # identity-matching logic in core.increment_matcher, so it should
+        # degrade gracefully instead of erroring on an unexpected name.
+        return sorted(records, key=lambda r: _increment_sort_key(r.name))
 
     def get_increment(self, project_name: str, increment_name: str) -> IncrementRecord | None:
         return next((i for i in self.list_increments(project_name) if i.name == increment_name), None)

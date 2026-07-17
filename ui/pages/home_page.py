@@ -9,7 +9,7 @@ import logging
 from functools import partial
 
 from PySide6.QtCore import QUrl, Qt
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtGui import QDesktopServices, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -34,7 +34,7 @@ from core.app_version import APP_VERSION
 from core.increment_matcher import MatchType
 from core.project_store import ProjectStore
 from core.update_check import UpdateStatus
-from ui.dialogs.about_dialog import AboutDialog
+from ui.dialogs.about_dialog import APP_NAME, AboutDialog
 from ui.dialogs.data_location_dialog import DataLocationDialog
 from ui.dialogs.help_dialog import HelpDialog
 from ui.dialogs.project_dialog import ProjectDialog
@@ -46,8 +46,34 @@ from ui.workers import run_with_progress
 logger = logging.getLogger(__name__)
 
 EXCEL_FILE_FILTER = "TIO Workbooks (*.xlsm *.xlsx)"
-LOGO_HEIGHT_PX = 48  # see _build_logo_label's docstring for why this isn't 36 anymore
+# 72px: large enough to read as a masthead mark (tested against 64/80 too --
+# 64 read a little small next to the title's bold 22px, 80 started crowding
+# the header's vertical padding) without visually overwhelming the title
+# next to it. Replaces the old 48px inline size used when the logo sat in
+# the Project row instead of its own header -- see _build_header().
+HEADER_LOGO_HEIGHT_PX = 72
 INCREMENT_TABLE_MAX_HEIGHT_PX = 320  # ~7-8 rows before a scrollbar kicks in -- see _refresh_increment_table
+
+
+def _make_white_background_transparent(pixmap: QPixmap, threshold: int = 248) -> QPixmap:
+    """logo.png's canvas has a baked-in OPAQUE white background, not a
+    transparent one -- verified directly: ~72% of its pixels are exactly
+    (255,255,255,255); only a thin rounded-corner trim (~1.5% of pixels)
+    is actually alpha=0. That was invisible at the old 48px inline size
+    sitting on the Project row's own white card background, but becomes a
+    plainly visible white box now that the logo sits on the header's
+    light-blue band (see _build_header()) instead. Chroma-keys near-white
+    pixels to transparent so the mark itself floats on whatever background
+    it's placed on, rather than needing to re-export the source asset.
+    """
+    image = pixmap.toImage().convertToFormat(QImage.Format_ARGB32)
+    for y in range(image.height()):
+        for x in range(image.width()):
+            color = image.pixelColor(x, y)
+            if color.red() >= threshold and color.green() >= threshold and color.blue() >= threshold:
+                color.setAlpha(0)
+                image.setPixelColor(x, y, color)
+    return QPixmap.fromImage(image)
 
 
 class HomePage(QWidget):
@@ -57,20 +83,59 @@ class HomePage(QWidget):
         self.on_view_data = on_view_data  # callback(project_name, increment_name)
         self.on_view_combined = on_view_combined  # callback(project_name, [(increment_name, version), ...])
 
+        # Outer layout has NO margins -- the header masthead needs to sit
+        # flush against the window's own top/left/right edges (a light
+        # band that stops short of the edges reads as a mistake, not a
+        # deliberate masthead). The old 20px page padding moves onto its
+        # own `content` widget below instead, so the Project row/
+        # Increments section keep their previous inset unchanged.
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(20, 20, 20, 20)
-        outer.setSpacing(16)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(self._build_header())
 
-        outer.addWidget(self._build_project_bar())
-        outer.addWidget(self._build_increment_section())
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(20, 20, 20, 20)
+        content_layout.setSpacing(16)
+        content_layout.addWidget(self._build_project_bar())
+        content_layout.addWidget(self._build_increment_section())
         # No stretch on the section above -- it now sizes to its own
         # content (see INCREMENT_TABLE_MAX_HEIGHT_PX/_refresh_increment_table),
         # so any space left over past that shows the plain page
         # background (QMainWindow's #f4f5f7) instead of an empty white
         # card stretched to fill the window.
-        outer.addStretch(1)
+        content_layout.addStretch(1)
+        outer.addWidget(content, stretch=1)
 
         self._refresh_project_combo()
+
+    # ------------------------------------------------------------------
+    # header / masthead
+    # ------------------------------------------------------------------
+    def _build_header(self) -> QFrame:
+        """Full-width masthead above the Project row -- see QFrame#appHeader
+        in ui/style.qss for the light-blue-tint band + bottom-border
+        treatment (reuses the same blue as #primaryButton rather than a
+        new color) that gives it visual weight distinct from the plain
+        page background below it.
+        """
+        frame = QFrame()
+        frame.setObjectName("appHeader")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setSpacing(16)
+
+        logo_label = self._build_logo_label(HEADER_LOGO_HEIGHT_PX)
+        if logo_label is not None:
+            layout.addWidget(logo_label)
+
+        title_label = QLabel(APP_NAME)
+        title_label.setObjectName("mastheadTitle")
+        layout.addWidget(title_label)
+
+        layout.addStretch(1)
+        return frame
 
     # ------------------------------------------------------------------
     # Part 1: project bar
@@ -84,11 +149,6 @@ class HomePage(QWidget):
 
         layout.addWidget(self._build_hamburger_button())
         layout.addSpacing(8)
-
-        logo_label = self._build_logo_label()
-        if logo_label is not None:
-            layout.addWidget(logo_label)
-            layout.addSpacing(8)
 
         label = QLabel("Project:")
         label.setObjectName("sectionTitle")
@@ -114,25 +174,19 @@ class HomePage(QWidget):
         layout.addWidget(delete_button)
         return frame
 
-    def _build_logo_label(self) -> QLabel | None:
+    def _build_logo_label(self, height_px: int) -> QLabel | None:
         """Loads assets/logo.png (resolved relative to the app's own
         location, not the cwd -- see ui/paths.py) and returns it scaled to
-        toolbar height. Returns None if the file is missing/unreadable so
-        the header bar just renders without it instead of crashing or
-        showing a broken-image icon.
+        `height_px` tall. Returns None if the file is missing/unreadable so
+        the header just renders without it instead of crashing or showing
+        a broken-image icon.
 
-        LOGO_HEIGHT_PX was 36 and looked cramped/squeezed -- investigated
-        before touching it, rather than guessing: scaledToHeight() DOES
-        preserve aspect ratio correctly (not a scaling bug), and
-        logo.png's own content bounding box is within 1px of its full
-        113x144 canvas on every side (not excess transparent margin to
-        crop either). The real cause is simpler than either of those --
-        logo.png is a tall, narrow (portrait) mark, so scaling it to a
-        short, fixed HEIGHT alone necessarily renders a thin, small
-        result (~28px wide at 36px tall) too small to read its own
-        detail clearly. 48px is large enough for the mark to read
-        clearly without visually dominating the row next to the
-        toolbar's buttons/combo box.
+        scaledToHeight() preserves aspect ratio correctly (verified, not a
+        scaling bug); logo.png is a tall, narrow (portrait) mark, so a
+        short fixed height alone necessarily renders a thin result -- e.g.
+        ~28px wide at 36px tall, too small to read its own detail clearly.
+        See HEADER_LOGO_HEIGHT_PX's own comment for how the current height
+        was picked.
         """
         logo_path = get_asset_path("logo.png")
         pixmap = QPixmap(str(logo_path))
@@ -142,7 +196,9 @@ class HomePage(QWidget):
 
         label = QLabel()
         label.setPixmap(
-            pixmap.scaledToHeight(LOGO_HEIGHT_PX, Qt.SmoothTransformation)
+            _make_white_background_transparent(pixmap).scaledToHeight(
+                height_px, Qt.SmoothTransformation
+            )
         )
         return label
 
