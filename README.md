@@ -2,7 +2,6 @@
 
 A desktop application that automates state compliance reporting for hospital construction inspection projects — replacing a fully manual, error-prone Excel workflow with an automated, auditable one.
 
-<!-- TODO: replace with a fresh screenshot of the current main window (with the new header/masthead) -->
 ![Main window](screenshots/main-window.png)
 
 ## The Problem
