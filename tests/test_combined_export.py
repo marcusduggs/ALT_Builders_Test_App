@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import openpyxl
 
-from core import combined_export, excel_reader
+from core import combined_export, excel_export, excel_reader
 from core.project_store import ProjectStore
 from ui.mock_data import MockDataStore
 
@@ -32,6 +32,35 @@ PROJECT_NAME = "Combined Export Validation"
 def main():
     failures = []
 
+    # This test exercises the combined All Data/Report export logic
+    # itself (subtotals, Grand Totals, on-screen ordering) -- forced ON
+    # for the test's duration regardless of the app's current default,
+    # since that logic must keep working correctly whenever
+    # core.excel_export.SHOW_ALL_DATA_AND_REPORT_TABS is flipped back
+    # to True (see that constant's docstring). Restored afterward so
+    # this doesn't leak into any other test run in the same process.
+    original_toggle = excel_export.SHOW_ALL_DATA_AND_REPORT_TABS
+    excel_export.SHOW_ALL_DATA_AND_REPORT_TABS = True
+    try:
+        _run(failures)
+    finally:
+        excel_export.SHOW_ALL_DATA_AND_REPORT_TABS = original_toggle
+
+    print("\n" + "=" * 70)
+    if failures:
+        print("RESULT: FAIL")
+        for f in failures:
+            print(" -", f)
+        raise SystemExit(1)
+    else:
+        print("RESULT: PASS -- combined All Data/Sum Data/Report/Changes all correct: on-screen order, Increment "
+              "column, non-latest version honored, exactly one distinctly-labeled overall Grand Total, "
+              "Changes' flattened (not sectioned) State Revision Log/Update History tables both correct, and "
+              "All Data/Sum Data's per-increment subtotal rows are contiguous, exactly match each increment's own "
+              "independent single-increment totals, and leave the final Grand Total unchanged")
+
+
+def _run(failures):
     with tempfile.TemporaryDirectory() as tmp:
         project_store = ProjectStore(base_dir=Path(tmp) / "data")
         store = MockDataStore(project_store)
@@ -349,19 +378,6 @@ def main():
         print(f"default_combined_filename result: {name!r}")
         if name != "Combined_Export_Validation_Combined_2-increments.xlsx":
             failures.append(f"2: unexpected default filename: {name!r}")
-
-    print("\n" + "=" * 70)
-    if failures:
-        print("RESULT: FAIL")
-        for f in failures:
-            print(" -", f)
-        raise SystemExit(1)
-    else:
-        print("RESULT: PASS -- combined All Data/Sum Data/Report/Changes all correct: on-screen order, Increment "
-              "column, non-latest version honored, exactly one distinctly-labeled overall Grand Total, "
-              "Changes' flattened (not sectioned) State Revision Log/Update History tables both correct, and "
-              "All Data/Sum Data's per-increment subtotal rows are contiguous, exactly match each increment's own "
-              "independent single-increment totals, and leave the final Grand Total unchanged")
 
 
 if __name__ == "__main__":

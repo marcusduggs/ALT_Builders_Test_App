@@ -38,7 +38,7 @@ dropping them carries no risk of preview/export drift.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QStandardItem, QStandardItemModel
+from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -55,7 +55,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core import combined_export
+from core import combined_export, excel_export
+from core.excel_reader import stage_header_status, sum_data_stage_headers
 from ui.mock_data import STAGE_COUNT, CombinedView, MockDataStore
 from ui.pages.data_view_page import (
     _describe_change,
@@ -135,9 +136,16 @@ class CombinedDataViewPage(QWidget):
         self.all_data_table = self._build_all_data_tab()
         self.sum_data_table = self._build_sum_data_tab()
         tabs = self.tabs
-        tabs.addTab(self.all_data_table, "All Data")
+        # All Data/Report tabs are hidden (not just built -- both are
+        # still built and populated normally above/below either way)
+        # when excel_export.SHOW_ALL_DATA_AND_REPORT_TABS is False --
+        # see that constant's docstring.
+        if excel_export.SHOW_ALL_DATA_AND_REPORT_TABS:
+            tabs.addTab(self.all_data_table, "All Data")
         tabs.addTab(self.sum_data_table, "Sum Data")
-        tabs.addTab(self._build_report_tab(), "Report")
+        report_tab = self._build_report_tab()
+        if excel_export.SHOW_ALL_DATA_AND_REPORT_TABS:
+            tabs.addTab(report_tab, "Report")
         tabs.addTab(self._build_changes_tab(), "Changes")
         outer.addWidget(tabs, stretch=1)
 
@@ -317,13 +325,38 @@ class CombinedDataViewPage(QWidget):
     # Sum Data tab
     # ------------------------------------------------------------------
     def _build_sum_data_tab(self) -> FrozenTableView:
+        # Stage names are a template property, not a per-increment one --
+        # see core.combined_export._write_combined_sum_data_sheet's
+        # matching comment -- so the first selected increment's is used
+        # as the canonical source for this shared header row.
+        stage_names = self.view.increments[0].stage_names if self.view.increments else {}
         headers = ["Increment", "Index", "Description", "Approval Agency"]
-        headers += [f"Stage {i}" for i in range(1, STAGE_COUNT + 1)]
+        headers += sum_data_stage_headers(stage_names)
         headers += ["VCR", "Open", "Done", "Total", "% Complete"]
 
         rows = self.view.sum_data_rows
         model = QStandardItemModel(len(rows) + 1, len(headers))
         model.setHorizontalHeaderLabels(headers)
+        # See ui.pages.data_view_page's matching comment -- "Piers\nStage
+        # 1" headers are wider than the 56px stage columns.
+        for col_idx, header in enumerate(headers):
+            model.setHeaderData(col_idx, Qt.Horizontal, header, Qt.ToolTipRole)
+
+        # Same header color coding as the single-increment tab (see
+        # ui.pages.data_view_page's matching comment), aggregated across
+        # every selected increment's REAL rows together -- real_rows()
+        # strips this function's own subtotal marker rows out first, so
+        # they can't skew "is any item still Open for this stage" (a
+        # marker row isn't a real item requiring anything). Recomputed
+        # fresh from these same live rows every time this tab is built.
+        header_statuses = stage_header_status(combined_export.real_rows(rows))
+        for stage in range(1, STAGE_COUNT + 1):
+            status = header_statuses[stage]
+            if status is None:
+                continue
+            col_idx = FROZEN_COLUMNS + (stage - 1)
+            model.setHeaderData(col_idx, Qt.Horizontal, QBrush(_SUM_DATA_STATUS_FILL[status]), Qt.BackgroundRole)
+            model.setHeaderData(col_idx, Qt.Horizontal, QBrush(_SUM_DATA_STATUS_TEXT_COLOR[status]), Qt.ForegroundRole)
 
         for row_idx, row_data in enumerate(rows):
             if row_data["is_subtotal"]:
@@ -364,8 +397,18 @@ class CombinedDataViewPage(QWidget):
                     stage_item.setToolTip(f"Stage {stage} — {status}")
                 items.append(stage_item)
 
-            vcr_item = QStandardItem("" if row_data.get("vcr") is None else str(row_data["vcr"]))
+            # "vcr" is already "Done"/"Open"/None here (see
+            # ui.mock_data._sum_data_rows) -- F-Cons Verif items track
+            # completion via this one field instead of the 42-stage
+            # grid, so it gets the same colored-status treatment a
+            # required stage cell gets above.
+            vcr_status = row_data.get("vcr")
+            vcr_item = QStandardItem(vcr_status or "")
             vcr_item.setTextAlignment(Qt.AlignCenter)
+            if vcr_status in ("Done", "Open"):
+                vcr_item.setBackground(_SUM_DATA_STATUS_FILL[vcr_status])
+                vcr_item.setForeground(_SUM_DATA_STATUS_TEXT_COLOR[vcr_status])
+                vcr_item.setToolTip(f"VCR — {vcr_status}")
             items.append(vcr_item)
 
             open_item = QStandardItem(str(row_data["open_count"]))

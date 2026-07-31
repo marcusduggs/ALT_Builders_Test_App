@@ -10,10 +10,13 @@ can't trigger the same action a second time while one is already running.
 
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 from PySide6.QtWidgets import QProgressDialog, QWidget
+
+logger = logging.getLogger(__name__)
 
 
 class _WorkerSignals(QObject):
@@ -22,11 +25,12 @@ class _WorkerSignals(QObject):
 
 
 class _Worker(QRunnable):
-    def __init__(self, fn: Callable, args: tuple, kwargs: dict):
+    def __init__(self, fn: Callable, args: tuple, kwargs: dict, description: str):
         super().__init__()
         self.fn = fn
         self.args = args
         self.kwargs = kwargs
+        self.description = description  # run_with_progress's `message` -- what the user was doing, for the log line
         self.signals = _WorkerSignals()
         # Qt's QThreadPool deletes the C++-side QRunnable as soon as run()
         # returns when autoDelete is on (the default) -- that races with
@@ -41,6 +45,17 @@ class _Worker(QRunnable):
         try:
             result = self.fn(*self.args, **self.kwargs)
         except Exception as exc:  # noqa: BLE001 -- intentionally broad, forwarded to on_error, never swallowed
+            # logger.exception() (not just .error()) captures the full
+            # traceback via sys.exc_info() -- has to happen HERE, still
+            # inside the except block on the background thread, since
+            # that context is gone by the time _error() below runs on
+            # the UI thread. Every run_with_progress caller gets this
+            # for free -- the whole point is that a caller's on_error
+            # can be as simple as showing a dialog; it never has to
+            # remember to log anything itself for the failure to end up
+            # in the log file (see core/app_logging.py).
+            fn_name = getattr(self.fn, "__qualname__", repr(self.fn))
+            logger.exception("Background task failed (%r): %s", self.description, fn_name)
             self.signals.error.emit(exc)
         else:
             self.signals.finished.emit(result)
@@ -73,7 +88,7 @@ def run_with_progress(
     dialog.setCancelButton(None)
     dialog.show()
 
-    worker = _Worker(fn, args, kwargs)
+    worker = _Worker(fn, args, kwargs, description=message)
 
     def _finished(result):
         dialog.close()

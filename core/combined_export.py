@@ -88,10 +88,11 @@ from __future__ import annotations
 from typing import Any
 
 import openpyxl
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from core import excel_export
 from core.excel_export import (
     _BOLD_FONT,
     _DESCRIPTION_ALIGNMENT,
@@ -111,9 +112,10 @@ from core.excel_export import (
     _format_changes_date,
     _history_entry_detail_text,
     _history_entry_summary,
+    _write_sum_data_header_rows,
     _wrapped_row_height,
 )
-from core.excel_reader import STAGE_COUNT, live_sum_data_totals
+from core.excel_reader import STAGE_COUNT, live_sum_data_totals, stage_header_status
 
 INCREMENT_COL = 1
 INDEX_COL = 2
@@ -130,6 +132,17 @@ STAGE_LAST_COL = STAGE_FIRST_COL + STAGE_COUNT - 1
 # SUBTOTAL_ROW_BACKGROUND, the same color).
 _SUBTOTAL_FILL = PatternFill(start_color="FFEEF1F7", end_color="FFEEF1F7", fill_type="solid")
 _SUBTOTAL_FONT = Font(bold=True)
+
+# Sum Data header row's own border -- same treatment as
+# core.excel_export._SUM_DATA_HEADER_BORDER, scoped to the combined
+# Sum Data sheet specifically (out of scope for Combined All Data --
+# see module docstring).
+_SUM_DATA_HEADER_BORDER = Border(
+    left=Side(style="thin", color="FF000000"),
+    right=Side(style="thin", color="FF000000"),
+    top=Side(style="thin", color="FF000000"),
+    bottom=Side(style="thin", color="FF000000"),
+)
 
 # --- Changes sheet column layout -- see _write_combined_changes_sheet.
 # Same +1 shift (leading Increment column) versus
@@ -274,6 +287,17 @@ def build_combined_sum_data_rows(increments: list[Any]) -> list[dict]:
     this list ever independently re-derives (and risks disagreeing on)
     these live-status-dependent values.
 
+    open_count/done_count/total_count include the row's VCR status
+    (row_data["vcr"], already "Done"/"Open"/None -- see
+    ui.mock_data._sum_data_rows) alongside required_stages, so an
+    F-Cons Verif row (required_stages always empty for those -- they
+    track via VCR, not the 42-stage grid) gets a real Total/%Complete
+    instead of always showing 0/blank despite having a real VCR status.
+    This matches core.excel_reader.live_sum_data_totals(), which
+    already folds VCR into the Grand Total the same way -- without this,
+    summing every row's own Total column would undercount relative to
+    that Grand Total.
+
     Each SUBTOTAL marker row's "subtotal_totals" is
     core.excel_reader.live_sum_data_totals() called on that ONE
     increment's own raw increment.sum_data list -- the exact same
@@ -293,8 +317,13 @@ def build_combined_sum_data_rows(increments: list[Any]) -> list[dict]:
             live_status = {stage: stage_status.get(stage, "Open") for stage in required}
             done_count = sum(1 for status in live_status.values() if status == "Done")
             open_count = sum(1 for status in live_status.values() if status == "Open")
-            total_count = len(required)
-            pct = (done_count / total_count) if required else None
+            vcr_status = row_data.get("vcr")
+            if vcr_status == "Done":
+                done_count += 1
+            elif vcr_status == "Open":
+                open_count += 1
+            total_count = done_count + open_count
+            pct = (done_count / total_count) if total_count else None
             rows.append(
                 {
                     "increment": increment.name,
@@ -506,12 +535,26 @@ def _write_sum_data_subtotal_row(ws: Worksheet, row_data: dict) -> None:
 
 
 def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None:
-    headers = ["Increment", "Index", "Description", "Approval Agency"] + _stage_headers() + [
-        "VCR", "Open", "Done", "Total", "% Complete"
-    ]
-    _write_header(ws, headers)
-
+    # Stage names are a template property, not a per-increment one --
+    # every increment of the same project is expected to share the same
+    # A-Project Info Stage No. -> Stage Name table (see
+    # core.excel_reader.parse_project_info), so the first selected
+    # increment's is used as the canonical source for this combined
+    # sheet's headers rather than repeating/reconciling it per increment.
+    stage_names = increments[0].stage_names if increments else {}
     rows = build_combined_sum_data_rows(increments)
+    # real_rows() strips subtotal marker rows out first -- a marker row
+    # isn't a real item requiring anything, so it can't skew "is any
+    # item still Open for this stage" (see
+    # core.excel_reader.stage_header_status's docstring).
+    _write_sum_data_header_rows(
+        ws,
+        ["Increment", "Index", "Description", "Approval Agency"],
+        ["VCR", "Open", "Done", "Total", "% Complete"],
+        stage_names,
+        stage_header_status(real_rows(rows)),
+    )
+
     for row_data in rows:
         if row_data["is_subtotal"]:
             _write_sum_data_subtotal_row(ws, row_data)
@@ -519,6 +562,7 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
 
         live_status = row_data["live_status"]
         pct = row_data["pct_complete"]
+        vcr_status = row_data.get("vcr")
 
         values = [
             row_data["increment"],
@@ -527,7 +571,7 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
             row_data.get("approval_agency") or "",
         ]
         values += ["" for _ in range(1, STAGE_COUNT + 1)]  # written properly below via _write_sum_data_stage_cell
-        values.append(row_data.get("vcr"))
+        values.append(vcr_status)
         values.append(row_data["open_count"])
         values.append(row_data["done_count"])
         values.append(row_data["total_count"])
@@ -538,6 +582,12 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
         _apply_description_wrap(ws, excel_row, column=DESCRIPTION_COL)
         for stage, status in live_status.items():
             _write_sum_data_stage_cell(ws, excel_row, stage, status)
+        if vcr_status in ("Done", "Open"):
+            vcr_col = STAGE_LAST_COL + 1
+            cell = ws.cell(row=excel_row, column=vcr_col)
+            cell.fill = _SUM_DATA_STAGE_FILLS[vcr_status]
+            cell.font = _SUM_DATA_STAGE_FONTS[vcr_status]
+            cell.alignment = _STAGE_ALIGNMENT
 
         pct_col = STAGE_LAST_COL + 5
         if pct is not None:
@@ -580,7 +630,8 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
     ws.column_dimensions[get_column_letter(done_col)].width = 9
     ws.column_dimensions[get_column_letter(total_col)].width = 9
     ws.column_dimensions[get_column_letter(pct_col)].width = 12
-    ws.freeze_panes = ws.cell(row=2, column=STAGE_FIRST_COL).coordinate
+    # row=3, not 2 -- freezes BOTH header rows (see _write_sum_data_header_rows).
+    ws.freeze_panes = ws.cell(row=3, column=STAGE_FIRST_COL).coordinate
 
 
 def _write_combined_report_sheet(ws: Worksheet, increments: list[Any]) -> None:
@@ -717,19 +768,31 @@ def export_combined_report(increments: list[Any], path: str) -> None:
     populated by MockDataStore.get_increment_for_display -- one entry
     per user-selected increment, at whichever version was picked for
     it, in the order they should appear in the output) to one .xlsx
-    workbook with four combined sheets: All Data, Sum Data, Report,
-    Changes.
+    workbook with, in order: All Data, Sum Data, Report, Changes --
+    unless core.excel_export.SHOW_ALL_DATA_AND_REPORT_TABS is False, in
+    which case only Sum Data and Changes are written (see that
+    constant's docstring; build_combined_all_data_rows/
+    build_combined_report_rows and their sheet writers are untouched
+    either way -- only whether they get called here changes).
     """
     wb = openpyxl.Workbook()
-    ws_all = wb.active
-    ws_all.title = "All Data"
-    _write_combined_all_data_sheet(ws_all, increments)
 
-    ws_sum = wb.create_sheet("Sum Data")
+    if excel_export.SHOW_ALL_DATA_AND_REPORT_TABS:
+        ws_all = wb.active
+        ws_all.title = "All Data"
+        _write_combined_all_data_sheet(ws_all, increments)
+        ws_sum = wb.create_sheet("Sum Data")
+    else:
+        # See core.excel_export.export_increment's matching comment --
+        # openpyxl.Workbook()'s default first sheet is repurposed as
+        # Sum Data rather than left as an extra blank one.
+        ws_sum = wb.active
+        ws_sum.title = "Sum Data"
     _write_combined_sum_data_sheet(ws_sum, increments)
 
-    ws_report = wb.create_sheet("Report")
-    _write_combined_report_sheet(ws_report, increments)
+    if excel_export.SHOW_ALL_DATA_AND_REPORT_TABS:
+        ws_report = wb.create_sheet("Report")
+        _write_combined_report_sheet(ws_report, increments)
 
     ws_changes = wb.create_sheet("Changes")
     _write_combined_changes_sheet(ws_changes, increments)

@@ -21,11 +21,59 @@ changelog can never drift apart from EACH OTHER either.
 
 APP_VERSION = "0.12.0"
 
-# Deliberately NOT the usual cumulative feature list this release -- v0.12.0
-# exists solely to test the "Check for Updates" flow end-to-end (see
-# core/update_check.py) and has no functional changes of its own since
-# v0.11.0. Inventing feature bullets here would misrepresent the release in
-# both the About dialog and the GitHub Release body (that same text, per
-# .github/workflows/release.yml) -- say so plainly instead. The next real
-# feature release should go back to a full, cumulative changelog.
-CHANGELOG_SUMMARY = "Version bump for update-check testing -- no functional changes since v0.11.0."
+# Back to the usual cumulative feature list -- v0.12.0's single "no
+# functional changes" line covered only that one test-only release (see
+# git history); this is the next real feature release, so the full
+# history resumes, with everything shipped since v0.11.0 appended.
+# NOT yet re-bumped to a new version number -- that's a separate,
+# deliberate step (tag + push) once this is ready to actually release.
+CHANGELOG_SUMMARY = """\
+- Track progress per stage with Done/Open status
+- Review changes before accepting an updated file, including new items \
+and updated values
+- See stage, status, and progress totals at a glance
+- Automatically detect whether an upload is a new increment or an \
+update to an existing one
+- Keep every previous version of an increment, and view any of them at \
+any time
+- Export All Data, Sum Data, and Report to Excel
+- Choose where your data is stored
+- Check for app updates, and open the built-in help guide, from the \
+menu
+- Renamed to Altamirano Builders TIO Compliance and Reporting
+- Combine multiple increments into one report, with a read-only \
+preview before exporting
+- See a state's official revision log, this app's own update history, \
+and your own notes together on one Changes tab
+- View the help guide in a built-in window instead of an external PDF \
+viewer
+- Added a proper app icon, shown in the title bar, taskbar/dock, and \
+Alt-Tab switcher
+- Fixed the menu dropdown rendering in the wrong (dark) theme
+- Sized the logo and the increments table to read clearly instead of \
+looking squeezed or leaving empty space
+- Unified button styling app-wide (primary/secondary/destructive) for \
+a consistent look
+- Added zebra striping and hover highlighting to data tables for \
+easier row scanning
+- Fixed a bug where the increments table could show duplicate Version/\
+Actions controls after navigating back to it
+- Combined All Data/Sum Data now show a subtotal after each \
+increment's items, in addition to the overall Grand Total
+- Added a header with the app logo and title above the Project row
+- Increments now sort numerically by increment number (e.g. INC 9 \
+before INC 10) instead of an arbitrary order
+- Updated the copyright notice's wording (About dialog and LICENSE.txt)
+- Fixed the Project dropdown and tooltips rendering in the wrong \
+(dark) theme
+- Streamlined the increment view to show Sum Data and Changes
+- Fixed View Data sometimes appearing to do nothing, with no error \
+message, if a file couldn't be loaded
+- The app now keeps a log file to help diagnose problems if something \
+goes wrong
+- Improved reliability of increment naming when a new file is uploaded
+- Sum Data's stage columns now show the real stage name and are \
+color-coded (red/green) based on whether every item for that stage \
+is complete
+- The update-available dialog now also shows a copyable link, for \
+browsers that don't open automatically"""

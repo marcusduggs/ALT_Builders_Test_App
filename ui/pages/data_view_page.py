@@ -98,7 +98,7 @@ from __future__ import annotations
 from functools import partial
 
 from PySide6.QtCore import QModelIndex, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QStandardItem, QStandardItemModel
+from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -118,12 +118,16 @@ from PySide6.QtWidgets import (
 )
 
 from core import excel_export
-from core.excel_reader import live_sum_data_totals
+from core.excel_reader import live_sum_data_totals, stage_header_status, sum_data_stage_headers
 from ui.mock_data import STAGE_COUNT, Increment, MockDataStore
 from ui.widgets.frozen_table import FrozenTableView
 from ui.workers import run_with_progress
 
 FROZEN_COLUMNS = 3
+# Sum Data's own frozen-column count -- one more than All Data's
+# FROZEN_COLUMNS above, for the leading Inc # column Sum Data has and
+# All Data deliberately doesn't (see _build_sum_data_table).
+SUM_DATA_FROZEN_COLUMNS = 4
 RECENTLY_ADDED_COLOR = QColor("#eaf7ee")
 FLASH_COLOR = QColor("#fff3b0")
 TOTALS_ROW_BACKGROUND = QColor("#e4e8f0")
@@ -348,9 +352,16 @@ class DataViewPage(QWidget):
         self._refresh_changes_tab()
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self.all_data_container, "All Data")
+        # All Data/Report tabs are hidden (not just built) when
+        # excel_export.SHOW_ALL_DATA_AND_REPORT_TABS is False -- see
+        # that constant's docstring. Their containers above are still
+        # built and populated normally either way; only whether they're
+        # added to the tab widget is gated on this.
+        if excel_export.SHOW_ALL_DATA_AND_REPORT_TABS:
+            self.tabs.addTab(self.all_data_container, "All Data")
         self.tabs.addTab(self.sum_data_container, "Sum Data")
-        self.tabs.addTab(self.report_container, "Report")
+        if excel_export.SHOW_ALL_DATA_AND_REPORT_TABS:
+            self.tabs.addTab(self.report_container, "Report")
         self.tabs.addTab(self.changes_container, "Changes")
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -712,21 +723,45 @@ class DataViewPage(QWidget):
         self.sum_data_layout.addWidget(self._build_sum_data_table())
 
     def _build_sum_data_table(self) -> FrozenTableView:
-        headers = ["Index", "Description", "Approval Agency"]
-        headers += [f"Stage {i}" for i in range(1, STAGE_COUNT + 1)]
+        headers = ["Inc #", "Index", "Description", "Approval Agency"]
+        headers += sum_data_stage_headers(self.increment.stage_names)
         headers += ["VCR", "Open", "Done", "Total", "% Complete"]
 
         rows = self.increment.sum_data
         model = QStandardItemModel(len(rows) + 1, len(headers))  # +1 for the totals row
         model.setHorizontalHeaderLabels(headers)
+        # Stage headers ("Piers\nStage 1") are wider than the 56px stage
+        # columns and get visually truncated there -- a tooltip keeps the
+        # full name available on hover without needing every column
+        # widened just to read its header.
+        for col_idx, header in enumerate(headers):
+            model.setHeaderData(col_idx, Qt.Horizontal, header, Qt.ToolTipRole)
+
+        # Stage header color coding: red if ANY item requiring that
+        # stage is still Open, green only if EVERY item requiring it is
+        # Done, uncolored if nothing requires it. Computed fresh from
+        # these SAME live rows every time this table is built (see
+        # _refresh_sum_data_tab -- rebuilt from scratch on every tab
+        # switch and every call after a status edit elsewhere), never
+        # cached on the Increment or computed once at load time, so it
+        # can never show a stale color after a status change.
+        header_statuses = stage_header_status(rows)
+        for stage in range(1, STAGE_COUNT + 1):
+            status = header_statuses[stage]
+            if status is None:
+                continue
+            col_idx = SUM_DATA_FROZEN_COLUMNS + (stage - 1)
+            model.setHeaderData(col_idx, Qt.Horizontal, QBrush(_SUM_DATA_STATUS_FILL[status]), Qt.BackgroundRole)
+            model.setHeaderData(col_idx, Qt.Horizontal, QBrush(_SUM_DATA_STATUS_TEXT_COLOR[status]), Qt.ForegroundRole)
 
         for row_idx, row_data in enumerate(rows):
+            inc_item = QStandardItem(self.increment.name)
             index_item = QStandardItem(str(row_data["index"]))
             description_item = QStandardItem(row_data.get("description") or "")
             description_item.setToolTip(row_data.get("description") or "")
             agency_item = QStandardItem(row_data.get("approval_agency") or "")
 
-            items = [index_item, description_item, agency_item]
+            items = [inc_item, index_item, description_item, agency_item]
 
             required = row_data.get("required_stages", [])
             stage_status = row_data.get("stage_status", {})
@@ -750,9 +785,27 @@ class DataViewPage(QWidget):
                     stage_item.setToolTip(f"Stage {stage} — {status}")
                 items.append(stage_item)
 
-            vcr_item = QStandardItem("" if row_data.get("vcr") is None else str(row_data["vcr"]))
+            # VCR (ui.mock_data._sum_data_rows already ran this through
+            # core.excel_reader.stage_marker_status, so it's "Done"/
+            # "Open"/None here, never the file's raw "x"/1 marker) --
+            # F-Cons Verif items track completion via this one field
+            # instead of the 42-stage grid, so it gets the SAME
+            # colored-status treatment as a required stage cell above,
+            # and the same contribution to Open/Done/Total below.
+            vcr_status = row_data.get("vcr")
+            vcr_item = QStandardItem(vcr_status or "")
             vcr_item.setTextAlignment(Qt.AlignCenter)
+            if vcr_status in ("Done", "Open"):
+                if vcr_status == "Done":
+                    done_count += 1
+                else:
+                    open_count += 1
+                vcr_item.setBackground(_SUM_DATA_STATUS_FILL[vcr_status])
+                vcr_item.setForeground(_SUM_DATA_STATUS_TEXT_COLOR[vcr_status])
+                vcr_item.setToolTip(f"VCR — {vcr_status}")
             items.append(vcr_item)
+
+            total_count = done_count + open_count
 
             open_item = QStandardItem(str(open_count))
             open_item.setTextAlignment(Qt.AlignCenter)
@@ -762,11 +815,11 @@ class DataViewPage(QWidget):
             done_item.setTextAlignment(Qt.AlignCenter)
             items.append(done_item)
 
-            total_item = QStandardItem(str(len(required)))
+            total_item = QStandardItem(str(total_count))
             total_item.setTextAlignment(Qt.AlignCenter)
             items.append(total_item)
 
-            pct_item = QStandardItem(_format_pct(done_count, len(required)))
+            pct_item = QStandardItem(_format_pct(done_count, total_count))
             pct_item.setTextAlignment(Qt.AlignCenter)
             items.append(pct_item)
 
@@ -776,7 +829,7 @@ class DataViewPage(QWidget):
                 model.setItem(row_idx, col_idx, item)
 
         totals = live_sum_data_totals(rows)
-        totals_items = [_totals_item("Totals"), _totals_item(""), _totals_item("")]
+        totals_items = [_totals_item("Totals"), _totals_item(""), _totals_item(""), _totals_item("")]
         for stage in range(1, STAGE_COUNT + 1):
             totals_items.append(_totals_item(str(totals["stage_open_counts"][stage])))
         totals_items.append(_totals_item(str(totals["vcr_open_count"])))
@@ -787,17 +840,18 @@ class DataViewPage(QWidget):
         for col_idx, item in enumerate(totals_items):
             model.setItem(len(rows), col_idx, item)
 
-        table = FrozenTableView(frozen_columns=FROZEN_COLUMNS)
+        table = FrozenTableView(frozen_columns=SUM_DATA_FROZEN_COLUMNS)
         table.setModel(model)
         table.setAlternatingRowColors(True)
         table.setWordWrap(True)
         table.verticalHeader().hide()
-        table.setColumnWidth(0, 90)
-        table.setColumnWidth(1, 320)
-        table.setColumnWidth(2, 140)
-        for col in range(FROZEN_COLUMNS, FROZEN_COLUMNS + STAGE_COUNT):
+        table.setColumnWidth(0, 220)
+        table.setColumnWidth(1, 90)
+        table.setColumnWidth(2, 320)
+        table.setColumnWidth(3, 140)
+        for col in range(SUM_DATA_FROZEN_COLUMNS, SUM_DATA_FROZEN_COLUMNS + STAGE_COUNT):
             table.setColumnWidth(col, 56)
-        vcr_col = FROZEN_COLUMNS + STAGE_COUNT
+        vcr_col = SUM_DATA_FROZEN_COLUMNS + STAGE_COUNT
         table.setColumnWidth(vcr_col, 56)
         table.setColumnWidth(vcr_col + 1, 56)  # Open
         table.setColumnWidth(vcr_col + 2, 56)  # Done

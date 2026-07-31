@@ -40,11 +40,25 @@ import re
 from typing import Any
 
 import openpyxl
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from core.excel_reader import STAGE_COUNT, live_sum_data_totals
+from core.excel_reader import STAGE_COUNT, live_sum_data_totals, stage_header_status
+
+# Single toggle controlling All Data/Report tab-and-sheet VISIBILITY
+# across all four Sum Data surfaces (this file's export_increment,
+# core.combined_export's export_combined_report, and both in-app tab
+# widgets -- ui.pages.data_view_page and
+# ui.pages.combined_data_view_page, both of which import this same
+# constant rather than defining their own copy). Sum Data and Changes
+# are never affected either way.
+#
+# Flipping this back to True is the ONLY step needed to restore All
+# Data/Report everywhere -- their underlying data/rows/sheet-writing
+# functions are untouched and still fully computed either way; only
+# whether they're added to the tab widget / workbook is gated on this.
+SHOW_ALL_DATA_AND_REPORT_TABS = False
 
 _STAGE_MARKS = {"Done": "X", "Open": "1"}
 _STAGE_FILLS = {
@@ -69,9 +83,31 @@ _SUM_DATA_STAGE_FONTS = {
     "Done": Font(color="FF006100"),
     "Open": Font(color="FF9C0006"),
 }
+# Same colors as _SUM_DATA_STAGE_FONTS above, bold -- for the stage
+# HEADER color-coding feature (core.excel_reader.stage_header_status),
+# distinct from the (deliberately non-bold) per-row cell font: a header
+# should stay visually bold even when colored, matching every other
+# header cell.
+_SUM_DATA_STAGE_HEADER_FONTS = {
+    "Done": Font(color="FF006100", bold=True),
+    "Open": Font(color="FF9C0006", bold=True),
+}
 _HEADER_FONT = Font(bold=True)
 _BOLD_FONT = Font(bold=True)
 _DESCRIPTION_ALIGNMENT = Alignment(wrap_text=True, vertical="top")
+
+# Sum Data header row's own border -- a thin box around every header
+# cell, so "bold" actually reads as a distinct header band against the
+# data rows below it instead of just heavier text. Scoped to Sum Data
+# specifically (applied in _write_sum_data_sheet, not the shared
+# _write_header() All Data/Report also call) -- out of scope for this
+# pass, see module docstring.
+_SUM_DATA_HEADER_BORDER = Border(
+    left=Side(style="thin", color="FF000000"),
+    right=Side(style="thin", color="FF000000"),
+    top=Side(style="thin", color="FF000000"),
+    bottom=Side(style="thin", color="FF000000"),
+)
 
 # Bottom totals row -- bold + a subtle tint, matching
 # ui.pages.data_view_page's TOTALS_ROW_BACKGROUND exactly (#e4e8f0) so
@@ -83,6 +119,18 @@ INDEX_COL = 1
 DESCRIPTION_COL = 2
 AGENCY_COL = 3
 STAGE_FIRST_COL = 4
+
+# Sum Data's own column layout -- one column wider than All Data's
+# above (a leading Inc # column All Data doesn't have -- see module
+# docstring), so it needs its own constants rather than reusing
+# All Data's (which _write_all_data_sheet/_write_stage_cell still do,
+# unchanged).
+SUM_DATA_INCREMENT_COL = 1
+SUM_DATA_INDEX_COL = 2
+SUM_DATA_DESCRIPTION_COL = 3
+SUM_DATA_AGENCY_COL = 4
+SUM_DATA_STAGE_FIRST_COL = 5
+SUM_DATA_STAGE_LAST_COL = SUM_DATA_STAGE_FIRST_COL + STAGE_COUNT - 1
 STAGE_LAST_COL = STAGE_FIRST_COL + STAGE_COUNT - 1
 
 # Changes sheet -- three stacked tables sharing one column grid (see
@@ -172,7 +220,7 @@ def _write_stage_cell(ws: Worksheet, excel_row: int, stage: int, status: str | N
 
 def _write_sum_data_stage_cell(ws: Worksheet, excel_row: int, stage: int, status: str) -> None:
     cell = ws.cell(
-        row=excel_row, column=STAGE_FIRST_COL + stage - 1, value=_SUM_DATA_STAGE_LABELS[status]
+        row=excel_row, column=SUM_DATA_STAGE_FIRST_COL + stage - 1, value=_SUM_DATA_STAGE_LABELS[status]
     )
     cell.fill = _SUM_DATA_STAGE_FILLS[status]
     cell.font = _SUM_DATA_STAGE_FONTS[status]
@@ -241,17 +289,89 @@ def _write_all_data_sheet(ws: Worksheet, rows: list[dict[str, Any]], totals: dic
     ws.freeze_panes = ws.cell(row=2, column=STAGE_FIRST_COL).coordinate
 
 
-def _write_sum_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
+def _write_sum_data_header_rows(
+    ws: Worksheet,
+    leading_labels: list[str],
+    trailing_labels: list[str],
+    stage_names: dict[int, Any],
+    header_statuses: dict[int, str | None],
+) -> None:
+    """Sum Data's two-row stacked header -- stage name on row 1, "Stage
+    N" on row 2, matching the real template (see
+    tests/fixtures/sample_increment.xlsm's own Sum Data sheet, which
+    stacks stage name/number on separate rows the same way -- this
+    doesn't replicate its third row of bare stage numbers, just the two
+    rows this session's feature actually asked for).
+
+    Every OTHER column (leading_labels/trailing_labels -- Inc #/
+    Index/.../% Complete) has one logical header, not two, so its cell
+    is written once on row 1 and merged down through row 2 rather than
+    repeating the same label on both rows.
+
+    header_statuses colors each stage's two header cells together (see
+    core.excel_reader.stage_header_status) -- red if any item requiring
+    that stage is still Open, green only if every item requiring it is
+    Done, left uncolored (but still bordered/bold) if nothing requires
+    it at all. Recomputed by the caller from the SAME live rows on
+    every export -- never cached -- so this can never show a stale
+    color relative to what's actually in the sheet below it.
+    """
+    row1 = list(leading_labels)
+    row2 = [""] * len(leading_labels)
+    for i in range(1, STAGE_COUNT + 1):
+        row1.append(stage_names.get(i) or "")
+        row2.append(f"Stage {i}")
+    row1 += trailing_labels
+    row2 += [""] * len(trailing_labels)
+
+    ws.append(row1)
+    ws.append(row2)
+    total_cols = len(row1)
+
+    for row in (1, 2):
+        for col in range(1, total_cols + 1):
+            cell = ws.cell(row=row, column=col)
+            cell.font = _HEADER_FONT
+            cell.border = _SUM_DATA_HEADER_BORDER
+            cell.alignment = _STAGE_ALIGNMENT
+
+    stage_first_col = len(leading_labels) + 1
+    stage_last_col = stage_first_col + STAGE_COUNT - 1
+    for col in list(range(1, stage_first_col)) + list(range(stage_last_col + 1, total_cols + 1)):
+        ws.merge_cells(start_row=1, start_column=col, end_row=2, end_column=col)
+
+    for stage in range(1, STAGE_COUNT + 1):
+        status = header_statuses.get(stage)
+        if status is None:
+            continue
+        col = stage_first_col + stage - 1
+        for row in (1, 2):
+            cell = ws.cell(row=row, column=col)
+            cell.fill = _SUM_DATA_STAGE_FILLS[status]
+            cell.font = _SUM_DATA_STAGE_HEADER_FONTS[status]
+
+
+def _write_sum_data_sheet(
+    ws: Worksheet, rows: list[dict[str, Any]], increment_name: str, stage_names: dict[int, Any]
+) -> None:
     """Mirrors ui.pages.data_view_page's Sum Data tab exactly: live
     status.json-backed Done/Open per required stage (an unset required
     stage defaults to "Open" -- see that module's docstring), plus live
     Open/Done/Total/% Complete columns, rather than build_sum_data()'s
     own raw-file-derived status text.
+
+    Uses its own SUM_DATA_* column constants (one wider than All
+    Data's, for the leading Inc # column -- see module-level comment)
+    rather than the shared _set_common_column_widths/STAGE_FIRST_COL
+    All Data's sheet uses.
     """
-    headers = ["Index", "Description", "Approval Agency"] + _stage_headers() + [
-        "VCR", "Open", "Done", "Total", "% Complete"
-    ]
-    _write_header(ws, headers)
+    _write_sum_data_header_rows(
+        ws,
+        ["Inc #", "Index", "Description", "Approval Agency"],
+        ["VCR", "Open", "Done", "Total", "% Complete"],
+        stage_names,
+        stage_header_status(rows),
+    )
 
     for row_data in rows:
         required = row_data.get("required_stages", [])
@@ -259,16 +379,29 @@ def _write_sum_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
         live_status = {stage: stage_status.get(stage, "Open") for stage in required}
         done_count = sum(1 for status in live_status.values() if status == "Done")
         open_count = sum(1 for status in live_status.values() if status == "Open")
-        total_count = len(required)
-        pct = (done_count / total_count) if required else None
+
+        # VCR (already "Done"/"Open"/None -- see
+        # ui.mock_data._sum_data_rows) contributes to Open/Done/Total
+        # the same way a required stage does -- F-Cons Verif items
+        # (required_stages always empty for them) track completion via
+        # this one field instead of the 42-stage grid, so without this
+        # they'd always show Total 0 despite having a real VCR status.
+        vcr_status = row_data.get("vcr")
+        if vcr_status == "Done":
+            done_count += 1
+        elif vcr_status == "Open":
+            open_count += 1
+        total_count = done_count + open_count
+        pct = (done_count / total_count) if total_count else None
 
         values = [
+            increment_name,
             row_data.get("index"),
             row_data.get("description") or "",
             row_data.get("approval_agency") or "",
         ]
         values += ["" for _ in range(1, STAGE_COUNT + 1)]  # written properly below via _write_sum_data_stage_cell
-        values.append(row_data.get("vcr"))
+        values.append(vcr_status)
         values.append(open_count)
         values.append(done_count)
         values.append(total_count)
@@ -276,15 +409,21 @@ def _write_sum_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
         ws.append(values)
 
         excel_row = ws.max_row
-        _apply_description_wrap(ws, excel_row)
+        _apply_description_wrap(ws, excel_row, column=SUM_DATA_DESCRIPTION_COL)
         for stage, status in live_status.items():
             _write_sum_data_stage_cell(ws, excel_row, stage, status)
+        if vcr_status in ("Done", "Open"):
+            vcr_col = SUM_DATA_STAGE_LAST_COL + 1
+            cell = ws.cell(row=excel_row, column=vcr_col)
+            cell.fill = _SUM_DATA_STAGE_FILLS[vcr_status]
+            cell.font = _SUM_DATA_STAGE_FONTS[vcr_status]
+            cell.alignment = _STAGE_ALIGNMENT
 
-        pct_col = STAGE_LAST_COL + 5
+        pct_col = SUM_DATA_STAGE_LAST_COL + 5
         if pct is not None:
             ws.cell(row=excel_row, column=pct_col).number_format = "0%"
 
-    vcr_col = STAGE_LAST_COL + 1
+    vcr_col = SUM_DATA_STAGE_LAST_COL + 1
     open_col = vcr_col + 1
     done_col = vcr_col + 2
     total_col = vcr_col + 3
@@ -294,7 +433,7 @@ def _write_sum_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
     # core.excel_reader.live_sum_data_totals), never cached, so this
     # never goes stale relative to the individual rows just written above.
     totals = live_sum_data_totals(rows)
-    totals_values = ["Totals", "", ""]
+    totals_values = ["Totals", "", "", ""]
     for stage in range(1, STAGE_COUNT + 1):
         totals_values.append(totals["stage_open_counts"][stage])
     totals_values.append(totals["vcr_open_count"])
@@ -306,8 +445,16 @@ def _write_sum_data_sheet(ws: Worksheet, rows: list[dict[str, Any]]) -> None:
     if totals["pct_complete"] is not None:
         ws.cell(row=ws.max_row, column=pct_col).number_format = "0%"
 
-    _set_common_column_widths(ws, {vcr_col: 9, open_col: 9, done_col: 9, total_col: 9, pct_col: 12})
-    ws.freeze_panes = ws.cell(row=2, column=STAGE_FIRST_COL).coordinate
+    ws.column_dimensions[get_column_letter(SUM_DATA_INCREMENT_COL)].width = 40
+    ws.column_dimensions[get_column_letter(SUM_DATA_INDEX_COL)].width = 12
+    ws.column_dimensions[get_column_letter(SUM_DATA_DESCRIPTION_COL)].width = 45
+    ws.column_dimensions[get_column_letter(SUM_DATA_AGENCY_COL)].width = 20
+    for col in range(SUM_DATA_STAGE_FIRST_COL, SUM_DATA_STAGE_LAST_COL + 1):
+        ws.column_dimensions[get_column_letter(col)].width = 9
+    for col, width in {vcr_col: 9, open_col: 9, done_col: 9, total_col: 9, pct_col: 12}.items():
+        ws.column_dimensions[get_column_letter(col)].width = width
+    # row=3, not 2 -- freezes BOTH header rows (see _write_sum_data_header_rows).
+    ws.freeze_panes = ws.cell(row=3, column=SUM_DATA_STAGE_FIRST_COL).coordinate
 
 
 REPORT_DESCRIPTION_COL = 3
@@ -542,18 +689,33 @@ def export_increment(increment: Any, path: str) -> None:
     """Writes increment (a ui.mock_data.Increment, with all_data/
     sum_data/report/changes_log/change_history already populated by
     MockDataStore.get_increment_for_display) to a new .xlsx workbook at
-    path with four sheets, in order: All Data, Sum Data, Report, Changes.
+    path with, in order: All Data, Sum Data, Report, Changes -- unless
+    SHOW_ALL_DATA_AND_REPORT_TABS is False (see that constant above),
+    in which case only Sum Data and Changes are written. Either way,
+    increment.all_data/report and _write_all_data_sheet/_write_report_sheet
+    are completely untouched -- this only gates whether those sheets get
+    created in the output workbook, not whether the data behind them
+    exists or is computed.
     """
     wb = openpyxl.Workbook()
-    ws_all_data = wb.active
-    ws_all_data.title = "All Data"
-    _write_all_data_sheet(ws_all_data, increment.all_data, increment.all_data_totals)
 
-    ws_sum_data = wb.create_sheet("Sum Data")
-    _write_sum_data_sheet(ws_sum_data, increment.sum_data)
+    if SHOW_ALL_DATA_AND_REPORT_TABS:
+        ws_all_data = wb.active
+        ws_all_data.title = "All Data"
+        _write_all_data_sheet(ws_all_data, increment.all_data, increment.all_data_totals)
+        ws_sum_data = wb.create_sheet("Sum Data")
+    else:
+        # openpyxl.Workbook() always starts with one default sheet --
+        # repurposed as Sum Data (instead of creating a second, empty
+        # one) so Sum Data is still the workbook's first/active sheet
+        # when All Data isn't there to hold that place.
+        ws_sum_data = wb.active
+        ws_sum_data.title = "Sum Data"
+    _write_sum_data_sheet(ws_sum_data, increment.sum_data, increment.name, increment.stage_names)
 
-    ws_report = wb.create_sheet("Report")
-    _write_report_sheet(ws_report, increment.report)
+    if SHOW_ALL_DATA_AND_REPORT_TABS:
+        ws_report = wb.create_sheet("Report")
+        _write_report_sheet(ws_report, increment.report)
 
     ws_changes = wb.create_sheet("Changes")
     _write_changes_sheet(ws_changes, increment.changes_log, increment.change_history, increment.comments)

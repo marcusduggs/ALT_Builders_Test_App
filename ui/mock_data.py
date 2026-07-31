@@ -89,6 +89,16 @@ class Increment:
     # this Increment's live sum_data every time it's rendered/exported --
     # see core.excel_reader.live_sum_data_totals.
     all_data_totals: dict = field(default_factory=dict)
+    # {stage_number: real_name} from A-Project Info's Stage No. -> Stage
+    # Name lookup (core.excel_reader.parse_project_info) -- e.g. {1:
+    # "Piers", 2: "Mass Ex", ...}. Static per version, safe to compute
+    # once, same as all_data_totals above. Used ONLY for Sum Data's
+    # column headers (see ui/pages/data_view_page.py,
+    # ui/pages/combined_data_view_page.py, core/excel_export.py,
+    # core/combined_export.py) -- All Data deliberately keeps its plain
+    # "Stage N" headers, out of scope for the Sum Data formatting pass
+    # this field was added for.
+    stage_names: dict[int, Any] = field(default_factory=dict)
 
     @property
     def needs_status_row_count(self) -> int:
@@ -253,6 +263,17 @@ def _sum_data_rows(all_data_rows: list[dict], sum_data_df: Any) -> list[dict]:
     actual current status (which can include a manual override that
     disagrees with the file's raw marker) is what this tab is for
     surfacing, not a frozen recomputation from the file.
+
+    "vcr" is passed through core.excel_reader.stage_marker_status()
+    here -- F-Cons Verif items (required_stages always empty for them)
+    track completion via this one field instead of the 42-stage grid,
+    so it needs the exact same raw-"X"/"1" -> "Done"/"Open" treatment
+    stage cells already get from status.json, rather than surfacing the
+    file's raw marker unchanged. VCR has no status.json entry of its
+    own to override it with (required_stages_by_index() explicitly
+    scopes carryover to the Stage columns only -- see
+    core/status_tracker.py), so the raw marker IS the live status here,
+    unlike stage_status above.
     """
     all_data_by_index = {row["index"]: row for row in all_data_rows}
     rows = []
@@ -267,7 +288,7 @@ def _sum_data_rows(all_data_rows: list[dict], sum_data_df: Any) -> list[dict]:
                 "approval_agency": source["approval_agency"],
                 "required_stages": source["required_stages"],
                 "stage_status": source["stage_status"],
-                "vcr": source["vcr"],
+                "vcr": excel_reader.stage_marker_status(source["vcr"]),
             }
         )
     return rows
@@ -334,27 +355,33 @@ class MockDataStore:
         return increment_matcher.match_increment(existing_names, record_name)
 
     def add_new_increment(self, project_name: str, file_path: str) -> Increment:
-        """Parses file_path, names the increment from its A-Project Info
-        "Record Name (Scope of Project)" field (see
-        core.excel_reader.parse_project_info's "record_name"), and stores
-        it as version 1. Every required stage is seeded straight from the
-        file -- Rey's team's cell fill color if present, otherwise the
-        raw X/1 marker value itself, trusted directly -- see
-        core.status_tracker.apply_file_derived_seed. Raises ValueError if
-        the file has no readable record name or an increment with that
-        name already exists in this project (the caller should route
-        that case to "Upload New Version" instead).
+        """Parses file_path, names the increment via
+        core.excel_reader.get_record_name() -- the same search-based,
+        whitespace-normalized identity match_upload() above already used
+        to decide this file was a NEW increment in the first place (see
+        that function's docstring: "the source of truth
+        core.increment_matcher uses"), NOT
+        core.excel_reader.parse_project_info()'s "record_name" (a
+        different, more tolerant FIXED-CELL read meant only for cosmetic
+        display, e.g. All Data's "Inc #" column -- using that here would
+        risk silently storing a name that disagrees with the identity
+        match_upload() actually matched on, if this file's real Record
+        Name value has drifted to a different cell than that older fixed
+        position). Raises whatever get_record_name() raises if the file
+        has no readable record name, or ValueError if an increment with
+        that name already exists in this project (the caller should
+        route that case to "Upload New Version" instead).
+
+        Every required stage is seeded straight from the file -- Rey's
+        team's cell fill color if present, otherwise the raw X/1 marker
+        value itself, trusted directly -- see
+        core.status_tracker.apply_file_derived_seed.
 
         This does real openpyxl parsing (multi-second for a real file) --
         callers on the UI thread should run it via ui.workers.run_with_progress.
         """
+        increment_name = excel_reader.get_record_name(file_path)
         parsed = excel_reader.normalize_workbook(file_path)
-        increment_name = parsed["project_info"]["record_name"]
-        if not increment_name:
-            raise ValueError(
-                "Could not read an increment name from this file's A-Project Info sheet "
-                "(Record Name / Scope of Project is blank)."
-            )
         record = self.store.create_increment(project_name, increment_name, file_path)
 
         required_stages = excel_reader.required_stages_by_index(parsed["all_data"])
@@ -630,6 +657,7 @@ class MockDataStore:
             change_history=change_history,
             comments=comments,
             all_data_totals=parsed["all_data_totals"],
+            stage_names=parsed["project_info"]["stage_names"],
         )
 
     def set_stage_status(self, project_name: str, increment_name: str, index: str, stage: int, status: str) -> None:

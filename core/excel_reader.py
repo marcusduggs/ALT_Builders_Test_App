@@ -587,6 +587,79 @@ def parse_project_info(ws) -> dict[str, Any]:
     }
 
 
+def sum_data_stage_headers(stage_names: dict[int, Any]) -> list[str]:
+    """Sum Data's own stage column headers -- two stacked lines, the real
+    Stage No. -> Stage Name lookup above (cached per-increment on
+    ui.mock_data.Increment.stage_names) on top and "Stage N" below it,
+    joined with an embedded "\\n" -- e.g. "Piers\\nStage 1". Qt's
+    QHeaderView renders an embedded newline as two genuine stacked lines
+    (confirmed empirically -- not something that needs a second header
+    row in the table widgets, unlike the exported .xlsx, which uses two
+    real rows instead; see core.excel_export._write_sum_data_sheet).
+    Keeps the "Stage N" line rather than the bare name alone so a Sum
+    Data header still cross-references All Data's plain "Stage N"
+    columns (deliberately UNCHANGED -- this is Sum-Data-only scope) and
+    any "Stage N" text elsewhere in the app (tooltips, etc).
+
+    Falls back to the bare "Stage N" (one line, no name line at all) for
+    any stage number missing a name -- shouldn't happen in practice
+    (every real template fills in all 42, including a literal "Not
+    Used" for retired stage numbers), but a missing entry should
+    degrade gracefully, not raise.
+    """
+    headers = []
+    for i in range(1, STAGE_COUNT + 1):
+        name = stage_names.get(i)
+        headers.append(f"{name}\nStage {i}" if name else f"Stage {i}")
+    return headers
+
+
+def stage_header_status(rows: list[dict]) -> dict[int, str | None]:
+    """Aggregate Done/Open status per stage, across EVERY row where that
+    stage is required -- for Sum Data's stage column HEADERS (this
+    session's color-coding feature), not any individual row's own cell
+    (see _SUM_DATA_STAGE_FILLS-style per-row coloring elsewhere).
+
+    "Open" if ANY row that requires this stage currently has it Open
+    (an unset required stage defaults to Open, same convention
+    live_sum_data_totals() and every other live Sum Data view already
+    uses); "Done" only if EVERY row that requires this stage has it
+    Done; None if no row requires this stage at all -- nothing to
+    aggregate, so the header should read as neutral, not colored either
+    way.
+
+    `rows` is the SAME live row list (ui.mock_data.Increment.sum_data,
+    or its combined-view flattened equivalent via
+    core.combined_export.real_rows()) every other live Sum Data
+    aggregate (live_sum_data_totals, the per-row Open/Done/Total
+    columns) already reads status.json state from -- so this is always
+    exactly as current as everything else on screen, never a separate,
+    independently-stale computation. Single pass over `rows` (each
+    row's own required_stages list, not all 42 stages) -- the same
+    order of work live_sum_data_totals() already does every time Sum
+    Data renders, not a new meaningfully-heavier cost.
+    """
+    any_required = {stage: False for stage in range(1, STAGE_COUNT + 1)}
+    any_open = {stage: False for stage in range(1, STAGE_COUNT + 1)}
+    for row in rows:
+        required = row.get("required_stages", [])
+        stage_status = row.get("stage_status", {})
+        for stage in required:
+            any_required[stage] = True
+            if stage_status.get(stage, "Open") != "Done":
+                any_open[stage] = True
+
+    result: dict[int, str | None] = {}
+    for stage in range(1, STAGE_COUNT + 1):
+        if not any_required[stage]:
+            result[stage] = None
+        elif any_open[stage]:
+            result[stage] = "Open"
+        else:
+            result[stage] = "Done"
+    return result
+
+
 def _find_record_name_label_cell(ws):
     for row in RECORD_NAME_SEARCH_ROWS:
         for col in RECORD_NAME_SEARCH_COLS:
@@ -729,8 +802,22 @@ SUM_DATA_COLUMNS = (
 )
 
 
-def _status(value: Any) -> Any:
-    """All Data raw value -> Sum Data status text. See module docstring."""
+def stage_marker_status(value: Any) -> Any:
+    """All Data raw value -> Sum Data status text. See module docstring.
+
+    Public (not the module-local _status() this used to be) because
+    ui.mock_data._sum_data_rows() also calls this directly, to give
+    Sum Data's VCR field (F-Cons Verif items track completion via VCR
+    rather than the 42-stage grid -- see required_stages_by_index's
+    docstring) the same "X"/"1" -> "Done"/"Open" treatment stage cells
+    already get, instead of displaying VCR's raw file marker unchanged.
+
+    Idempotent on an already-clean "Done"/"Open"/None value (none of
+    the branches above match those strings, so they fall through to
+    the last line unchanged, and None hits the `in (0, None, "")`
+    branch both times) -- safe to call again on a value this function
+    already produced, which live_sum_data_totals() below does.
+    """
     if isinstance(value, str) and value.strip().lower() == "x":
         return "Done"
     if value == 1 and not isinstance(value, bool):
@@ -765,9 +852,9 @@ def build_sum_data(records: list[BlueSheetRecord], inc_label: Any) -> pd.DataFra
                 continue
 
         stage_statuses = {
-            stage: _status(rec.stage_values.get(stage)) for stage in range(1, STAGE_COUNT + 1)
+            stage: stage_marker_status(rec.stage_values.get(stage)) for stage in range(1, STAGE_COUNT + 1)
         }
-        vcr_status = _status(rec.vcr)
+        vcr_status = stage_marker_status(rec.vcr)
 
         open_count = sum(1 for v in list(stage_statuses.values()) + [vcr_status] if v == "Open")
         done_count = sum(1 for v in list(stage_statuses.values()) + [vcr_status] if v == "Done")
@@ -922,7 +1009,7 @@ def sum_data_totals(sum_data: pd.DataFrame) -> dict[str, Any]:
     function's callers for the exact formulas this replicates).
 
     This reflects the FILE's own raw Done/Open status
-    (build_sum_data()'s _status() classification), not any live
+    (build_sum_data()'s stage_marker_status() classification), not any live
     status.json override -- correct immediately after a fresh upload
     (status.json is seeded directly from this same raw classification on
     first upload -- see core.status_tracker), but NOT what the app
@@ -976,7 +1063,7 @@ def live_sum_data_totals(rows: list[dict]) -> dict[str, Any]:
             else:
                 stage_open_counts[stage] += 1
                 open_total += 1
-        vcr_status = _status(row.get("vcr"))
+        vcr_status = stage_marker_status(row.get("vcr"))
         if vcr_status == "Done":
             done_total += 1
         elif vcr_status == "Open":
@@ -1051,8 +1138,8 @@ def fill_status_by_index(records: list[BlueSheetRecord]) -> dict[str, dict[int, 
 def raw_status_by_index(records: list[BlueSheetRecord]) -> dict[str, dict[int, str]]:
     """Rey's team's Done/Open status, by Index, derived directly from
     each stage cell's raw marker ("X"/"x" -> Done, 1 -> Open) -- the same
-    per-cell transform Sum Data itself uses (_status()), just computed
-    across every grid-sheet row instead of Sum Data's filtered subset.
+    per-cell transform Sum Data itself uses (stage_marker_status()), just
+    computed across every grid-sheet row instead of Sum Data's filtered subset.
 
     Trusting the raw marker this directly is a deliberate choice, made
     with the "SUM DATA IS STALE..." caution above already on the table:
@@ -1073,7 +1160,7 @@ def raw_status_by_index(records: list[BlueSheetRecord]) -> dict[str, dict[int, s
             continue
         stages = {}
         for stage, value in rec.stage_values.items():
-            status = _status(value)
+            status = stage_marker_status(value)
             if status in ("Done", "Open"):
                 stages[stage] = status
         if stages:

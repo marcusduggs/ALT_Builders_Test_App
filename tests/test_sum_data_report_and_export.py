@@ -28,6 +28,33 @@ PROJECT_NAME = "Sum Data / Report / Export Validation"
 def main():
     failures = []
 
+    # This test exercises the All Data/Report export logic itself
+    # (sheet presence, freeze panes, wrap text, etc.) -- forced ON for
+    # the test's duration regardless of the app's current default,
+    # since that logic must keep working correctly whenever
+    # core.excel_export.SHOW_ALL_DATA_AND_REPORT_TABS is flipped back
+    # to True (see that constant's docstring). Restored afterward so
+    # this doesn't leak into any other test run in the same process.
+    original_toggle = excel_export.SHOW_ALL_DATA_AND_REPORT_TABS
+    excel_export.SHOW_ALL_DATA_AND_REPORT_TABS = True
+    try:
+        _run(failures)
+    finally:
+        excel_export.SHOW_ALL_DATA_AND_REPORT_TABS = original_toggle
+
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+    if failures:
+        print("RESULT: FAIL")
+        for f in failures:
+            print(" -", f)
+        raise SystemExit(1)
+    else:
+        print("RESULT: PASS")
+
+
+def _run(failures):
     with tempfile.TemporaryDirectory() as tmp:
         project_store = ProjectStore(base_dir=Path(tmp) / "data")
         store = MockDataStore(project_store)
@@ -192,10 +219,18 @@ def main():
         ws_sum = wb_out["Sum Data"]
         if not ws_sum["A1"].font.bold:
             failures.append("4: Sum Data header row should be bold")
-        if ws_sum.freeze_panes != "D2":
-            failures.append(f"4: Sum Data should freeze header row + first 3 columns (D2), got {ws_sum.freeze_panes}")
-        if ws_sum.max_row - 1 != len(display2.sum_data) + 1:
-            failures.append(f"4: Sum Data sheet should have one row per item + 1 totals row ({ws_sum.max_row - 1} vs {len(display2.sum_data) + 1})")
+        # Sum Data freezes one more leading column than All Data (E, not
+        # D) -- it has an Inc # column All Data deliberately doesn't
+        # (core.excel_export.SUM_DATA_* column constants vs All Data's
+        # own INDEX_COL/DESCRIPTION_COL/etc.) -- AND one more row (E3,
+        # not E2): its stage columns have a real two-row stacked header
+        # (stage name row 1, "Stage N" row 2 -- see
+        # core.excel_export._write_sum_data_header_rows), so data starts
+        # at row 3, not 2, unlike All Data's single-row header.
+        if ws_sum.freeze_panes != "E3":
+            failures.append(f"4: Sum Data should freeze both header rows + first 4 columns (E3), got {ws_sum.freeze_panes}")
+        if ws_sum.max_row - 2 != len(display2.sum_data) + 1:
+            failures.append(f"4: Sum Data sheet should have one row per item + 1 totals row ({ws_sum.max_row - 2} vs {len(display2.sum_data) + 1})")
         if "% Complete" not in [c.value for c in ws_sum[1]]:
             failures.append("4: Sum Data sheet should have a % Complete column")
 
@@ -227,20 +262,28 @@ def main():
         print("4b -- Description cells have wrap_text enabled")
         print("=" * 70)
 
-        for sheet_name, ws in (("All Data", ws_all), ("Sum Data", ws_sum)):
-            for r in range(2, ws.max_row):  # excludes the bottom totals row (blank Description, no wrap needed)
-                cell = ws.cell(row=r, column=excel_export.DESCRIPTION_COL)
+        # Sum Data's Description column is one over from All Data's (its
+        # own SUM_DATA_DESCRIPTION_COL, not DESCRIPTION_COL), and its
+        # first DATA row is one further down too (3, not 2) -- its
+        # header is two real rows, not one (see the freeze_panes check
+        # above) -- same Inc #/two-row-header offsets throughout.
+        for sheet_name, ws, description_col, first_data_row in (
+            ("All Data", ws_all, excel_export.DESCRIPTION_COL, 2),
+            ("Sum Data", ws_sum, excel_export.SUM_DATA_DESCRIPTION_COL, 3),
+        ):
+            for r in range(first_data_row, ws.max_row):  # excludes the bottom totals row (blank Description, no wrap needed)
+                cell = ws.cell(row=r, column=description_col)
                 if not cell.alignment.wrap_text:
                     failures.append(
                         f"4b: {sheet_name}!{cell.coordinate} (Description) should have "
                         f"wrap_text=True, got {cell.alignment.wrap_text!r}"
                     )
                     break
-            row_height = ws.row_dimensions[2].height
+            row_height = ws.row_dimensions[first_data_row].height
             if not row_height or row_height < 30:
                 failures.append(
                     f"4b: {sheet_name} data rows should have a row height tall enough for a "
-                    f"3-line description, got {row_height!r} for row 2"
+                    f"3-line description, got {row_height!r} for row {first_data_row}"
                 )
 
         description_width = ws_all.column_dimensions[
@@ -308,17 +351,6 @@ def main():
                 f"6: {sorted(missing_from_sum_data)} should appear in Sum Data after uploading "
                 f"demo_after.xlsm, but don't"
             )
-
-    print("\n" + "=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
-    if failures:
-        print("RESULT: FAIL")
-        for f in failures:
-            print(" -", f)
-        raise SystemExit(1)
-    else:
-        print("RESULT: PASS")
 
 
 if __name__ == "__main__":

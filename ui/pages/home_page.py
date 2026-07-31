@@ -8,8 +8,8 @@ from __future__ import annotations
 import logging
 from functools import partial
 
-from PySide6.QtCore import QUrl, Qt
-from PySide6.QtGui import QDesktopServices, QImage, QPixmap
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -39,6 +39,7 @@ from ui.dialogs.data_location_dialog import DataLocationDialog
 from ui.dialogs.help_dialog import HelpDialog
 from ui.dialogs.project_dialog import ProjectDialog
 from ui.dialogs.review_dialog import ReviewDialog
+from ui.dialogs.update_available_dialog import UpdateAvailableDialog
 from ui.mock_data import MockDataStore
 from ui.paths import get_asset_path, get_bundled_path
 from ui.workers import run_with_progress
@@ -270,21 +271,17 @@ class HomePage(QWidget):
         QMessageBox.information(self, "Update Check", "Couldn't check for updates right now. Try again later.")
 
     def _show_update_available_dialog(self, result):
-        version_label = f"v{result.latest_version}, pre-release" if result.is_prerelease else f"v{result.latest_version}"
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Information)
-        box.setWindowTitle("Update Available")
-        box.setText(
-            f"A new version ({version_label}) is available. You're currently on v{APP_VERSION}."
-        )
-        download_button = box.addButton("Download", QMessageBox.AcceptRole)
-        box.addButton("Later", QMessageBox.RejectRole)
-        box.exec()
-        if box.clickedButton() is download_button:
-            # The release PAGE (has context: notes, assets, etc.), not a
-            # raw asset link -- Rey should land somewhere with context,
-            # not a bare file download.
-            QDesktopServices.openUrl(QUrl(result.release_url))
+        # The release PAGE (has context: notes, assets, etc.), not a raw
+        # asset link -- Rey should land somewhere with context, not a
+        # bare file download. See UpdateAvailableDialog for the
+        # Download-button/copyable-link behavior itself.
+        UpdateAvailableDialog(
+            current_version=APP_VERSION,
+            latest_version=result.latest_version,
+            release_url=result.release_url,
+            is_prerelease=result.is_prerelease,
+            parent=self,
+        ).exec()
 
     def _on_exit(self):
         # Closes the top-level window exactly as clicking its own close

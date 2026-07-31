@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QDialog
 
-from core import app_config, project_store
+from core import app_config, app_logging, project_store
+from core.app_version import APP_VERSION
 from ui.dialogs.data_location_dialog import DataLocationDialog
 from ui.main_window import MainWindow
 from ui.paths import get_asset_path, get_bundled_path
+
+logger = logging.getLogger(__name__)
 
 
 def _ensure_data_location_configured() -> bool:
@@ -41,6 +45,13 @@ def _ensure_data_location_configured() -> bool:
 
 
 def main():
+    # First thing, before anything else can fail -- see
+    # core.app_logging's module docstring for why this has to exist at
+    # all (the release build is --windowed, so there's no console for
+    # the default stderr logging fallback to reach).
+    log_path = app_logging.configure_logging()
+    logger.info("App starting -- version %s, log file: %s", APP_VERSION, log_path)
+
     app = QApplication(sys.argv)
 
     # Set at the QApplication level (not per-window) so it becomes the

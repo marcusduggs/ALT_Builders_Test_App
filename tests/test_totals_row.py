@@ -43,6 +43,32 @@ PROJECT_NAME = "Totals Row Validation"
 def main():
     failures = []
 
+    # This test exercises the All Data export logic itself (totals row
+    # presence/styling/typing) -- forced ON for the test's duration
+    # regardless of the app's current default, since that logic must
+    # keep working correctly whenever
+    # core.excel_export.SHOW_ALL_DATA_AND_REPORT_TABS is flipped back
+    # to True (see that constant's docstring). Restored afterward so
+    # this doesn't leak into any other test run in the same process.
+    original_toggle = excel_export.SHOW_ALL_DATA_AND_REPORT_TABS
+    excel_export.SHOW_ALL_DATA_AND_REPORT_TABS = True
+    try:
+        _run(failures)
+    finally:
+        excel_export.SHOW_ALL_DATA_AND_REPORT_TABS = original_toggle
+
+    print("\n" + "=" * 70)
+    if failures:
+        print("RESULT: FAIL")
+        for f in failures:
+            print(" -", f)
+        raise SystemExit(1)
+    else:
+        print("RESULT: PASS -- totals row correct on fresh upload, excluded from item counts, "
+              "styled/typed correctly in export, and stays live-accurate after edits and re-uploads")
+
+
+def _run(failures):
     with tempfile.TemporaryDirectory() as tmp:
         project_store = ProjectStore(base_dir=Path(tmp) / "data")
         store = MockDataStore(project_store)
@@ -170,7 +196,10 @@ def main():
 
         ws_sum = wb_out["Sum Data"]
         sum_totals_row = ws_sum.max_row
-        open_col = 3 + excel_reader.STAGE_COUNT + 2  # Index,Desc,Agency + 42 stages + VCR -> Open
+        # Sum Data has an Inc # column All Data doesn't (Inc #,Index,Desc,
+        # Agency = 4 leading columns, not All Data's 3), so its Open
+        # column is one further right than the All Data SUM column above.
+        open_col = 4 + excel_reader.STAGE_COUNT + 2  # Inc #,Index,Desc,Agency + 42 stages + VCR -> Open
         open_cell = ws_sum.cell(row=sum_totals_row, column=open_col)
         done_cell = ws_sum.cell(row=sum_totals_row, column=open_col + 1)
         total_cell = ws_sum.cell(row=sum_totals_row, column=open_col + 2)
@@ -269,16 +298,6 @@ def main():
                 f"5: Sum Data's Done total should change after uploading a file with 3 new items, "
                 f"stayed at {sum_totals_before['done_total']}"
             )
-
-    print("\n" + "=" * 70)
-    if failures:
-        print("RESULT: FAIL")
-        for f in failures:
-            print(" -", f)
-        raise SystemExit(1)
-    else:
-        print("RESULT: PASS -- totals row correct on fresh upload, excluded from item counts, "
-              "styled/typed correctly in export, and stays live-accurate after edits and re-uploads")
 
 
 if __name__ == "__main__":
