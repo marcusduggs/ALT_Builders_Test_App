@@ -19,14 +19,12 @@ body by that same workflow, so release notes and the About dialog's
 changelog can never drift apart from EACH OTHER either.
 """
 
-APP_VERSION = "0.12.0"
+APP_VERSION = "0.13.0"
 
 # Back to the usual cumulative feature list -- v0.12.0's single "no
 # functional changes" line covered only that one test-only release (see
 # git history); this is the next real feature release, so the full
 # history resumes, with everything shipped since v0.11.0 appended.
-# NOT yet re-bumped to a new version number -- that's a separate,
-# deliberate step (tag + push) once this is ready to actually release.
 CHANGELOG_SUMMARY = """\
 - Track progress per stage with Done/Open status
 - Review changes before accepting an updated file, including new items \
