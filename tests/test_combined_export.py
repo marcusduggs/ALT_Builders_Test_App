@@ -27,6 +27,10 @@ DEMO_BEFORE = os.path.join(FIXTURES, "demo_before.xlsm")
 DEMO_AFTER = os.path.join(FIXTURES, "demo_after.xlsm")
 DEMO_INC3_NEW = os.path.join(FIXTURES, "demo_inc3_new.xlsm")
 PROJECT_NAME = "Combined Export Validation"
+# All fixtures here are known to have 42 real stage columns -- there's
+# no fixed STAGE_COUNT constant in core.excel_reader anymore (see its
+# detect_stage_count()).
+EXPECTED_STAGE_COUNT = 42
 
 
 def main():
@@ -204,7 +208,7 @@ def _run(failures):
         # not just numerically equal by coincidence).
         if inc2_subtotal_idx is not None:
             excel_row = inc2_subtotal_idx + 2  # +1 header, +1 back to 1-indexed
-            stage_count = excel_reader.STAGE_COUNT
+            stage_count = EXPECTED_STAGE_COUNT
             subtotal_values = {
                 f"Stage {s}": ws_all.cell(row=excel_row, column=4 + s).value for s in range(1, stage_count + 1)
             }
@@ -219,7 +223,7 @@ def _run(failures):
 
         # Grand Total unchanged: still the very last row, still correct.
         expected_all_data_grand_total_sum = inc2_v1.all_data_totals.get("SUM", 0) + inc3_latest.all_data_totals.get("SUM", 0)
-        actual_all_data_grand_total_sum = ws_all.cell(row=ws_all.max_row, column=4 + excel_reader.STAGE_COUNT + 2).value
+        actual_all_data_grand_total_sum = ws_all.cell(row=ws_all.max_row, column=4 + EXPECTED_STAGE_COUNT + 2).value
         print(f"All Data Grand Total SUM: {actual_all_data_grand_total_sum} (expected {expected_all_data_grand_total_sum})")
         if actual_all_data_grand_total_sum != expected_all_data_grand_total_sum:
             failures.append(
@@ -239,23 +243,23 @@ def _run(failures):
             if sum_data_col1[inc2_sum_subtotal_idx + 1] != inc3.name:
                 failures.append("1b2: Sum Data INC2 subtotal row is not immediately followed by INC3's first real row")
 
-            inc2_sum_ground_truth = excel_reader.live_sum_data_totals(inc2_v1.sum_data)
+            inc2_sum_ground_truth = excel_reader.live_sum_data_totals(inc2_v1.sum_data, inc2_v1.stage_count)
             excel_row = inc2_sum_subtotal_idx + 2
-            stage_count = excel_reader.STAGE_COUNT
+            stage_count = EXPECTED_STAGE_COUNT
             actual_grand_total = ws_sum.cell(row=excel_row, column=4 + stage_count + 4).value
             print(f"INC2 Sum Data subtotal grand_total={actual_grand_total} vs ground truth={inc2_sum_ground_truth['grand_total']}")
             if actual_grand_total != inc2_sum_ground_truth["grand_total"]:
                 failures.append(
                     f"1b2: INC2's Sum Data subtotal row's grand_total does NOT match "
-                    f"excel_reader.live_sum_data_totals(inc2_v1.sum_data) -- got {actual_grand_total}, "
+                    f"excel_reader.live_sum_data_totals(inc2_v1.sum_data, inc2_v1.stage_count) -- got {actual_grand_total}, "
                     f"expected {inc2_sum_ground_truth['grand_total']}"
                 )
 
         expected_sum_data_grand_total = (
-            excel_reader.live_sum_data_totals(inc2_v1.sum_data)["grand_total"]
-            + excel_reader.live_sum_data_totals(inc3_latest.sum_data)["grand_total"]
+            excel_reader.live_sum_data_totals(inc2_v1.sum_data, inc2_v1.stage_count)["grand_total"]
+            + excel_reader.live_sum_data_totals(inc3_latest.sum_data, inc3_latest.stage_count)["grand_total"]
         )
-        actual_sum_data_grand_total = ws_sum.cell(row=ws_sum.max_row, column=4 + excel_reader.STAGE_COUNT + 4).value
+        actual_sum_data_grand_total = ws_sum.cell(row=ws_sum.max_row, column=4 + EXPECTED_STAGE_COUNT + 4).value
         print(f"Sum Data Grand Total: {actual_sum_data_grand_total} (expected {expected_sum_data_grand_total})")
         if actual_sum_data_grand_total != expected_sum_data_grand_total:
             failures.append(

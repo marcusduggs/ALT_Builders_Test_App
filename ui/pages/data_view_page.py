@@ -119,7 +119,7 @@ from PySide6.QtWidgets import (
 
 from core import excel_export
 from core.excel_reader import live_sum_data_totals, stage_header_status, sum_data_stage_headers
-from ui.mock_data import STAGE_COUNT, Increment, MockDataStore
+from ui.mock_data import Increment, MockDataStore
 from ui.widgets.frozen_table import FrozenTableView
 from ui.workers import run_with_progress
 
@@ -553,7 +553,7 @@ class DataViewPage(QWidget):
 
     def _build_all_data_tab(self) -> FrozenTableView:
         headers = ["Index", "Description", "Approval Agency"]
-        headers += [f"Stage {i}" for i in range(1, STAGE_COUNT + 1)]
+        headers += [f"Stage {i}" for i in range(1, self.increment.stage_count + 1)]
         headers += ["VCR", "SUM"]
 
         item_count = len(self.increment.all_data)
@@ -582,7 +582,7 @@ class DataViewPage(QWidget):
 
             required = set(row_data.get("required_stages", []))
             stage_status = row_data.get("stage_status", {})
-            for stage in range(1, STAGE_COUNT + 1):
+            for stage in range(1, self.increment.stage_count + 1):
                 if stage in required:
                     stage_item = QStandardItem("")
                     status = stage_status.get(stage)
@@ -615,7 +615,7 @@ class DataViewPage(QWidget):
 
         totals = self.increment.all_data_totals
         totals_items = [_totals_item("Totals"), _totals_item(""), _totals_item("")]
-        for stage in range(1, STAGE_COUNT + 1):
+        for stage in range(1, self.increment.stage_count + 1):
             totals_items.append(_totals_item(_format_total(totals.get(f"Stage {stage}", 0))))
         totals_items.append(_totals_item(_format_total(totals.get("VCR", 0))))
         totals_items.append(_totals_item(_format_total(totals.get("SUM", 0))))
@@ -630,10 +630,10 @@ class DataViewPage(QWidget):
         table.setColumnWidth(0, 90)
         table.setColumnWidth(1, 320)
         table.setColumnWidth(2, 140)
-        for col in range(FROZEN_COLUMNS, FROZEN_COLUMNS + STAGE_COUNT):
+        for col in range(FROZEN_COLUMNS, FROZEN_COLUMNS + self.increment.stage_count):
             table.setColumnWidth(col, 56)
-        table.setColumnWidth(FROZEN_COLUMNS + STAGE_COUNT, 56)
-        table.setColumnWidth(FROZEN_COLUMNS + STAGE_COUNT + 1, 56)
+        table.setColumnWidth(FROZEN_COLUMNS + self.increment.stage_count, 56)
+        table.setColumnWidth(FROZEN_COLUMNS + self.increment.stage_count + 1, 56)
         table.horizontalHeader().setMinimumSectionSize(40)
         # Each row's height sized to fit its own wrapped Description text
         # (some are 1 line, some wrap to several) -- must run AFTER
@@ -652,7 +652,7 @@ class DataViewPage(QWidget):
             return  # the bottom totals row -- a summary, not a real item
 
         stage = col - FROZEN_COLUMNS + 1
-        if not (1 <= stage <= STAGE_COUNT):
+        if not (1 <= stage <= self.increment.stage_count):
             return  # Index/Description/Agency/VCR/SUM -- not a stage cell
 
         row_data = self.increment.all_data[row]
@@ -724,7 +724,7 @@ class DataViewPage(QWidget):
 
     def _build_sum_data_table(self) -> FrozenTableView:
         headers = ["Inc #", "Index", "Description", "Approval Agency"]
-        headers += sum_data_stage_headers(self.increment.stage_names)
+        headers += sum_data_stage_headers(self.increment.stage_names, self.increment.stage_count)
         headers += ["VCR", "Open", "Done", "Total", "% Complete"]
 
         rows = self.increment.sum_data
@@ -745,8 +745,8 @@ class DataViewPage(QWidget):
         # switch and every call after a status edit elsewhere), never
         # cached on the Increment or computed once at load time, so it
         # can never show a stale color after a status change.
-        header_statuses = stage_header_status(rows)
-        for stage in range(1, STAGE_COUNT + 1):
+        header_statuses = stage_header_status(rows, self.increment.stage_count)
+        for stage in range(1, self.increment.stage_count + 1):
             status = header_statuses[stage]
             if status is None:
                 continue
@@ -767,7 +767,7 @@ class DataViewPage(QWidget):
             stage_status = row_data.get("stage_status", {})
             done_count = 0
             open_count = 0
-            for stage in range(1, STAGE_COUNT + 1):
+            for stage in range(1, self.increment.stage_count + 1):
                 stage_item = QStandardItem("")
                 stage_item.setTextAlignment(Qt.AlignCenter)
                 if stage in required:
@@ -828,9 +828,9 @@ class DataViewPage(QWidget):
             for col_idx, item in enumerate(items):
                 model.setItem(row_idx, col_idx, item)
 
-        totals = live_sum_data_totals(rows)
+        totals = live_sum_data_totals(rows, self.increment.stage_count)
         totals_items = [_totals_item("Totals"), _totals_item(""), _totals_item(""), _totals_item("")]
-        for stage in range(1, STAGE_COUNT + 1):
+        for stage in range(1, self.increment.stage_count + 1):
             totals_items.append(_totals_item(str(totals["stage_open_counts"][stage])))
         totals_items.append(_totals_item(str(totals["vcr_open_count"])))
         totals_items.append(_totals_item(str(totals["open_total"])))
@@ -849,9 +849,9 @@ class DataViewPage(QWidget):
         table.setColumnWidth(1, 90)
         table.setColumnWidth(2, 320)
         table.setColumnWidth(3, 140)
-        for col in range(SUM_DATA_FROZEN_COLUMNS, SUM_DATA_FROZEN_COLUMNS + STAGE_COUNT):
+        for col in range(SUM_DATA_FROZEN_COLUMNS, SUM_DATA_FROZEN_COLUMNS + self.increment.stage_count):
             table.setColumnWidth(col, 56)
-        vcr_col = SUM_DATA_FROZEN_COLUMNS + STAGE_COUNT
+        vcr_col = SUM_DATA_FROZEN_COLUMNS + self.increment.stage_count
         table.setColumnWidth(vcr_col, 56)
         table.setColumnWidth(vcr_col + 1, 56)  # Open
         table.setColumnWidth(vcr_col + 2, 56)  # Done

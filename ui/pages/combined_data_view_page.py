@@ -37,6 +37,8 @@ dropping them carries no risk of preview/export drift.
 
 from __future__ import annotations
 
+from typing import Any
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
@@ -57,7 +59,7 @@ from PySide6.QtWidgets import (
 
 from core import combined_export, excel_export
 from core.excel_reader import stage_header_status, sum_data_stage_headers
-from ui.mock_data import STAGE_COUNT, CombinedView, MockDataStore
+from ui.mock_data import CombinedView, MockDataStore
 from ui.pages.data_view_page import (
     _describe_change,
     _first_line,
@@ -227,7 +229,7 @@ class CombinedDataViewPage(QWidget):
     # ------------------------------------------------------------------
     def _build_all_data_tab(self) -> FrozenTableView:
         headers = ["Increment", "Index", "Description", "Approval Agency"]
-        headers += [f"Stage {i}" for i in range(1, STAGE_COUNT + 1)]
+        headers += [f"Stage {i}" for i in range(1, self.view.stage_count + 1)]
         headers += ["VCR", "SUM"]
 
         rows = self.view.all_data_rows
@@ -241,7 +243,7 @@ class CombinedDataViewPage(QWidget):
                     _subtotal_item(f"{row_data['increment']} — Subtotal"),
                     _subtotal_item(""), _subtotal_item(""), _subtotal_item(""),
                 ]
-                for stage in range(1, STAGE_COUNT + 1):
+                for stage in range(1, self.view.stage_count + 1):
                     items.append(_subtotal_item(_format_total(totals.get(f"Stage {stage}", 0))))
                 items.append(_subtotal_item(_format_total(totals.get("VCR", 0))))
                 items.append(_subtotal_item(_format_total(totals.get("SUM", 0))))
@@ -266,7 +268,7 @@ class CombinedDataViewPage(QWidget):
 
             required = set(row_data.get("required_stages", []))
             stage_status = row_data.get("stage_status", {})
-            for stage in range(1, STAGE_COUNT + 1):
+            for stage in range(1, self.view.stage_count + 1):
                 if stage in required:
                     stage_item = QStandardItem("")
                     status = stage_status.get(stage)
@@ -294,7 +296,7 @@ class CombinedDataViewPage(QWidget):
 
         totals = self.view.all_data_totals
         totals_items = [_totals_item("Totals"), _totals_item(""), _totals_item(""), _totals_item("")]
-        for stage in range(1, STAGE_COUNT + 1):
+        for stage in range(1, self.view.stage_count + 1):
             totals_items.append(_totals_item(_format_total(totals.get(f"Stage {stage}", 0))))
         totals_items.append(_totals_item(_format_total(totals.get("VCR", 0))))
         totals_items.append(_totals_item(_format_total(totals.get("SUM", 0))))
@@ -310,10 +312,10 @@ class CombinedDataViewPage(QWidget):
         table.setColumnWidth(1, 90)
         table.setColumnWidth(2, 320)
         table.setColumnWidth(3, 140)
-        for col in range(FROZEN_COLUMNS, FROZEN_COLUMNS + STAGE_COUNT):
+        for col in range(FROZEN_COLUMNS, FROZEN_COLUMNS + self.view.stage_count):
             table.setColumnWidth(col, 56)
-        table.setColumnWidth(FROZEN_COLUMNS + STAGE_COUNT, 56)
-        table.setColumnWidth(FROZEN_COLUMNS + STAGE_COUNT + 1, 56)
+        table.setColumnWidth(FROZEN_COLUMNS + self.view.stage_count, 56)
+        table.setColumnWidth(FROZEN_COLUMNS + self.view.stage_count + 1, 56)
         table.horizontalHeader().setMinimumSectionSize(40)
         table.resizeRowsToContents()
         # No table.clicked connection anywhere on this page -- see module
@@ -325,13 +327,22 @@ class CombinedDataViewPage(QWidget):
     # Sum Data tab
     # ------------------------------------------------------------------
     def _build_sum_data_tab(self) -> FrozenTableView:
-        # Stage names are a template property, not a per-increment one --
-        # see core.combined_export._write_combined_sum_data_sheet's
-        # matching comment -- so the first selected increment's is used
-        # as the canonical source for this shared header row.
-        stage_names = self.view.increments[0].stage_names if self.view.increments else {}
+        # Stage names are a template property, not a per-increment one,
+        # so in the common case every selected increment agrees on a
+        # given stage number's name -- but increments can legitimately
+        # have DIFFERENT stage counts now (see self.view.stage_count's
+        # docstring: a real 2-stage increment combined with a 42-stage
+        # one), so a shorter increment's own stage_names dict simply
+        # won't have entries past its own count. Merging across every
+        # selected increment (not just the first) means a stage name
+        # still shows correctly as long as ANY selected increment
+        # defines it, rather than falling back to a bare "Stage N" for
+        # every stage past the FIRST increment's own count.
+        stage_names: dict[int, Any] = {}
+        for inc in self.view.increments:
+            stage_names.update(inc.stage_names)
         headers = ["Increment", "Index", "Description", "Approval Agency"]
-        headers += sum_data_stage_headers(stage_names)
+        headers += sum_data_stage_headers(stage_names, self.view.stage_count)
         headers += ["VCR", "Open", "Done", "Total", "% Complete"]
 
         rows = self.view.sum_data_rows
@@ -349,8 +360,8 @@ class CombinedDataViewPage(QWidget):
         # they can't skew "is any item still Open for this stage" (a
         # marker row isn't a real item requiring anything). Recomputed
         # fresh from these same live rows every time this tab is built.
-        header_statuses = stage_header_status(combined_export.real_rows(rows))
-        for stage in range(1, STAGE_COUNT + 1):
+        header_statuses = stage_header_status(combined_export.real_rows(rows), self.view.stage_count)
+        for stage in range(1, self.view.stage_count + 1):
             status = header_statuses[stage]
             if status is None:
                 continue
@@ -365,7 +376,7 @@ class CombinedDataViewPage(QWidget):
                     _subtotal_item(f"{row_data['increment']} — Subtotal"),
                     _subtotal_item(""), _subtotal_item(""), _subtotal_item(""),
                 ]
-                for stage in range(1, STAGE_COUNT + 1):
+                for stage in range(1, self.view.stage_count + 1):
                     items.append(_subtotal_item(str(totals["stage_open_counts"][stage])))
                 items.append(_subtotal_item(str(totals["vcr_open_count"])))
                 items.append(_subtotal_item(str(totals["open_total"])))
@@ -386,7 +397,7 @@ class CombinedDataViewPage(QWidget):
 
             required = row_data.get("required_stages", [])
             live_status = row_data["live_status"]  # precomputed by core.combined_export.build_combined_sum_data_rows
-            for stage in range(1, STAGE_COUNT + 1):
+            for stage in range(1, self.view.stage_count + 1):
                 stage_item = QStandardItem("")
                 stage_item.setTextAlignment(Qt.AlignCenter)
                 if stage in required:
@@ -434,7 +445,7 @@ class CombinedDataViewPage(QWidget):
 
         totals = self.view.sum_data_totals
         totals_items = [_totals_item("Totals"), _totals_item(""), _totals_item(""), _totals_item("")]
-        for stage in range(1, STAGE_COUNT + 1):
+        for stage in range(1, self.view.stage_count + 1):
             totals_items.append(_totals_item(str(totals["stage_open_counts"][stage])))
         totals_items.append(_totals_item(str(totals["vcr_open_count"])))
         totals_items.append(_totals_item(str(totals["open_total"])))
@@ -453,9 +464,9 @@ class CombinedDataViewPage(QWidget):
         table.setColumnWidth(1, 90)
         table.setColumnWidth(2, 320)
         table.setColumnWidth(3, 140)
-        for col in range(FROZEN_COLUMNS, FROZEN_COLUMNS + STAGE_COUNT):
+        for col in range(FROZEN_COLUMNS, FROZEN_COLUMNS + self.view.stage_count):
             table.setColumnWidth(col, 56)
-        vcr_col = FROZEN_COLUMNS + STAGE_COUNT
+        vcr_col = FROZEN_COLUMNS + self.view.stage_count
         table.setColumnWidth(vcr_col, 56)
         table.setColumnWidth(vcr_col + 1, 56)
         table.setColumnWidth(vcr_col + 2, 56)

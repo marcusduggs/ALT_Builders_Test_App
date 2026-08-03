@@ -81,11 +81,11 @@ import openpyxl
 from openpyxl.utils import get_column_letter
 
 from core.excel_reader import (
-    GRID_AGENCY_COL,
-    GRID_DESC_COL,
+    GRID_AGENCY_COL_OFFSET,
+    GRID_DESC_COL_OFFSET,
     GRID_HEADER_LABEL,
     GRID_INDEX_COL,
-    GRID_OPAA_COL,
+    GRID_OPAA_COL_OFFSET,
     GRID_SHEETS,
     GRID_STAGE_FIRST_COL,
     MILESTONE_DESC_COL,
@@ -93,9 +93,9 @@ from core.excel_reader import (
     MILESTONE_REF_COL,
     MILESTONE_SHEET,
     MILESTONE_VCR_COL,
-    STAGE_COUNT,
     BlueSheetRecord,
     _find_header_row,
+    detect_stage_count,
     open_workbook,
     parse_grid_sheet,
     parse_milestone_sheet,
@@ -121,11 +121,31 @@ def _load(path: Any) -> openpyxl.Workbook:
     return open_workbook(path)
 
 
-def _records_for_sheet(wb: openpyxl.Workbook, sheet_name: str) -> list[BlueSheetRecord]:
+def _grid_stage_count(wb: openpyxl.Workbook) -> int:
+    """This workbook's own real stage count -- max of detect_stage_count()
+    across the 3 grid sheets, same logic core.excel_reader.parse_workbook()
+    uses (they're expected to agree; see that function's docstring).
+    Computed once per workbook here rather than per-sheet, since
+    F-Cons Verif's records need it too (see _records_for_sheet) even
+    though it has no stage columns of its own.
+    """
+    counts = []
+    for sheet_name in GRID_SHEETS:
+        ws = wb[sheet_name]
+        try:
+            header_row = _find_header_row(ws, GRID_INDEX_COL, GRID_HEADER_LABEL)
+        except ValueError:
+            continue  # surfaced separately as a column anomaly below
+        counts.append(detect_stage_count(ws, header_row))
+    return max(counts) if counts else 0
+
+
+def _records_for_sheet(wb: openpyxl.Workbook, sheet_name: str, stage_count: int) -> list[BlueSheetRecord]:
     ws = wb[sheet_name]
     if sheet_name == MILESTONE_SHEET:
-        return parse_milestone_sheet(ws)
-    return parse_grid_sheet(ws)
+        return parse_milestone_sheet(ws, stage_count)
+    records, _ = parse_grid_sheet(ws)
+    return records
 
 
 def _index_diff(old_records: list[BlueSheetRecord], new_records: list[BlueSheetRecord]):
@@ -143,7 +163,21 @@ def _normalize_header(value: Any) -> str:
     return " ".join(str(value).split()).strip().lower()
 
 
-def _grid_column_anomalies(ws_old, ws_new, sheet_name: str) -> list[str]:
+def _grid_column_anomalies(
+    ws_old, ws_new, sheet_name: str, old_stage_count: int, new_stage_count: int
+) -> list[str]:
+    """Column anomalies for one grid sheet.
+
+    Description/OPAA/Approval Agency are compared at EACH file's own
+    real position (stage_last_col + a fixed offset -- see
+    core.excel_reader.GRID_DESC_COL_OFFSET and friends), not one shared
+    fixed column, since a real stage-count difference between versions
+    shifts them (confirmed against a real 2-stage file: those columns
+    sit right after whatever the last real stage column is, not at a
+    fixed position). A genuine stage-count change is flagged on its
+    own, explicitly, rather than left to surface as a confusing cascade
+    of "header text changed" noise from every column after it.
+    """
     anomalies: list[str] = []
 
     try:
@@ -162,14 +196,41 @@ def _grid_column_anomalies(ws_old, ws_new, sheet_name: str) -> list[str]:
     if header_old is None or header_new is None:
         return anomalies
 
-    positions = [("Index", GRID_INDEX_COL)]
-    positions += [(f"Stage {s}", GRID_STAGE_FIRST_COL + s - 1) for s in range(1, STAGE_COUNT + 1)]
-    positions += [("Description", GRID_DESC_COL), ("OPAA", GRID_OPAA_COL), ("Approval Agency", GRID_AGENCY_COL)]
+    if old_stage_count != new_stage_count:
+        anomalies.append(
+            f"{sheet_name}: number of real stage columns changed from {old_stage_count} to "
+            f"{new_stage_count} between versions -- this shifts Description/OPAA/Approval Agency "
+            "to a different column too, and is worth a human's attention even though the parser "
+            "itself handles it correctly"
+        )
 
-    for label, col in positions:
-        old_text = _normalize_header(ws_old.cell(row=header_old, column=col).value)
-        new_text = _normalize_header(ws_new.cell(row=header_new, column=col).value)
-        letter = get_column_letter(col)
+    old_stage_last_col = GRID_STAGE_FIRST_COL + old_stage_count - 1
+    new_stage_last_col = GRID_STAGE_FIRST_COL + new_stage_count - 1
+
+    positions = [("Index", GRID_INDEX_COL, GRID_INDEX_COL)]
+    # Only compare the shared prefix of stage numbers both files
+    # actually have -- a stage number past the SHORTER file's own real
+    # count doesn't exist there to compare against; the stage-count
+    # anomaly above already covers that difference on its own.
+    shared_stage_count = min(old_stage_count, new_stage_count)
+    positions += [
+        (f"Stage {s}", GRID_STAGE_FIRST_COL + s - 1, GRID_STAGE_FIRST_COL + s - 1)
+        for s in range(1, shared_stage_count + 1)
+    ]
+    positions += [
+        ("Description", old_stage_last_col + GRID_DESC_COL_OFFSET, new_stage_last_col + GRID_DESC_COL_OFFSET),
+        ("OPAA", old_stage_last_col + GRID_OPAA_COL_OFFSET, new_stage_last_col + GRID_OPAA_COL_OFFSET),
+        (
+            "Approval Agency",
+            old_stage_last_col + GRID_AGENCY_COL_OFFSET,
+            new_stage_last_col + GRID_AGENCY_COL_OFFSET,
+        ),
+    ]
+
+    for label, old_col, new_col in positions:
+        old_text = _normalize_header(ws_old.cell(row=header_old, column=old_col).value)
+        new_text = _normalize_header(ws_new.cell(row=header_new, column=new_col).value)
+        letter = get_column_letter(new_col)
 
         text_changed = old_text != new_text
         stage_lost_marker = label.startswith("Stage") and "stage" not in new_text
@@ -247,16 +308,25 @@ def compare_structure(old_workbook_path: Any, new_workbook_path: Any) -> dict[st
     wb_old = _load(old_workbook_path)
     wb_new = _load(new_workbook_path)
 
+    # Each workbook's own real stage count (see _grid_stage_count) --
+    # NOT assumed equal between old and new (a genuine re-scope between
+    # versions is exactly the kind of structural change this module
+    # exists to surface -- see _grid_column_anomalies).
+    old_stage_count = _grid_stage_count(wb_old)
+    new_stage_count = _grid_stage_count(wb_new)
+
     results: dict[str, SheetDiff] = {}
     for sheet_name in SHEETS_TO_COMPARE:
-        old_records = _records_for_sheet(wb_old, sheet_name)
-        new_records = _records_for_sheet(wb_new, sheet_name)
+        old_records = _records_for_sheet(wb_old, sheet_name, old_stage_count)
+        new_records = _records_for_sheet(wb_new, sheet_name, new_stage_count)
         added, removed, unchanged = _index_diff(old_records, new_records)
 
         if sheet_name == MILESTONE_SHEET:
             anomalies = _milestone_column_anomalies(wb_old[sheet_name], wb_new[sheet_name], sheet_name)
         else:
-            anomalies = _grid_column_anomalies(wb_old[sheet_name], wb_new[sheet_name], sheet_name)
+            anomalies = _grid_column_anomalies(
+                wb_old[sheet_name], wb_new[sheet_name], sheet_name, old_stage_count, new_stage_count
+            )
 
         results[sheet_name] = SheetDiff(
             sheet=sheet_name,

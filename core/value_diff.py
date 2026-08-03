@@ -32,7 +32,6 @@ from typing import Any
 from core.excel_reader import (
     GRID_SHEETS,
     MILESTONE_SHEET,
-    STAGE_COUNT,
     BlueSheetRecord,
     _blank_to_none,
     open_workbook,
@@ -49,7 +48,16 @@ ValueChanges = dict[str, dict[str, tuple[Any, Any]]]
 
 def _records_by_index(wb, sheet_name: str) -> dict[str, BlueSheetRecord]:
     ws = wb[sheet_name]
-    records = parse_milestone_sheet(ws) if sheet_name == MILESTONE_SHEET else parse_grid_sheet(ws)
+    if sheet_name == MILESTONE_SHEET:
+        # stage_count doesn't matter here -- F-Cons Verif records carry
+        # no real stage values either way, and compare_values() below
+        # unions each PAIR of records' own stage_values keys rather
+        # than trusting a fixed count, so an empty dict here (stage_count=0)
+        # behaves identically to the old fixed-42-of-None dict for
+        # comparison purposes.
+        records = parse_milestone_sheet(ws, stage_count=0)
+    else:
+        records, _ = parse_grid_sheet(ws)
     return {r.index: r for r in records if r.index}
 
 
@@ -78,7 +86,15 @@ def compare_values(old_workbook_path: Any, new_workbook_path: Any) -> ValueChang
             new_rec = new_by_index[index]
             fields: dict[str, tuple[Any, Any]] = {}
 
-            for stage in range(1, STAGE_COUNT + 1):
+            # Union of both records' OWN stage_values keys, not a fixed
+            # 42 -- each record's dict is already sized to its own
+            # file's real stage count (see core.excel_reader.parse_grid_sheet),
+            # which can legitimately differ between old and new (a
+            # real re-scope, not just a malformed file). A stage
+            # number only one side has still needs comparing (that's
+            # exactly the kind of otherwise-silent change this module
+            # exists to surface), so union rather than intersect.
+            for stage in sorted(set(old_rec.stage_values) | set(new_rec.stage_values)):
                 old_v = old_rec.stage_values.get(stage)
                 new_v = new_rec.stage_values.get(stage)
                 if not _normalized_eq(old_v, new_v):

@@ -38,6 +38,10 @@ SAMPLE = os.path.join(FIXTURES, "sample_increment.xlsm")
 DEMO_BEFORE = os.path.join(FIXTURES, "demo_before.xlsm")
 DEMO_AFTER = os.path.join(FIXTURES, "demo_after.xlsm")
 PROJECT_NAME = "Totals Row Validation"
+# sample_increment.xlsm's own real stage count -- core.excel_reader no
+# longer has a fixed STAGE_COUNT constant (see its detect_stage_count()),
+# but THIS fixture specifically is known to have 42.
+EXPECTED_STAGE_COUNT = 42
 
 
 def main():
@@ -116,13 +120,13 @@ def _run(failures):
             failures.append(f"1: fixture assumption broken -- expected our Sum Data reconstruction to have 103 rows, got {len(sum_data_df)}")
 
         # independent cross-check, not reusing sum_data_totals()/live_sum_data_totals() themselves
-        stage_and_vcr_cols = [f"Stage {i}" for i in range(1, excel_reader.STAGE_COUNT + 1)] + ["VCR"]
+        stage_and_vcr_cols = [f"Stage {i}" for i in range(1, EXPECTED_STAGE_COUNT + 1)] + ["VCR"]
         expected_open = int((sum_data_df[stage_and_vcr_cols] == "Open").sum().sum())
         expected_done = int((sum_data_df[stage_and_vcr_cols] == "Done").sum().sum())
         expected_total = int(sum_data_df["Total"].sum())
         print(f"Independently cross-checked expected totals for OUR row set: Open={expected_open}, Done={expected_done}, Total={expected_total}")
 
-        live_totals = excel_reader.live_sum_data_totals(display.sum_data)
+        live_totals = excel_reader.live_sum_data_totals(display.sum_data, display.stage_count)
         print(f"Sum Data live totals:     Open={live_totals['open_total']}, Done={live_totals['done_total']}, "
               f"Total={live_totals['grand_total']}, %={live_totals['pct_complete']}")
         if (live_totals["open_total"], live_totals["done_total"], live_totals["grand_total"]) != (expected_open, expected_done, expected_total):
@@ -179,7 +183,7 @@ def _run(failures):
 
         ws_all = wb_out["All Data"]
         all_totals_row = ws_all.max_row
-        sum_cell = ws_all.cell(row=all_totals_row, column=3 + excel_reader.STAGE_COUNT + 2)  # Index,Desc,Agency + 42 stages + VCR -> SUM
+        sum_cell = ws_all.cell(row=all_totals_row, column=3 + EXPECTED_STAGE_COUNT + 2)  # Index,Desc,Agency + 42 stages + VCR -> SUM
         print(f"Exported All Data totals row ({all_totals_row}): Index={ws_all.cell(row=all_totals_row, column=1).value!r}, "
               f"SUM={sum_cell.value!r} (type={type(sum_cell.value).__name__})")
         if ws_all.cell(row=all_totals_row, column=1).value != "Totals":
@@ -199,7 +203,7 @@ def _run(failures):
         # Sum Data has an Inc # column All Data doesn't (Inc #,Index,Desc,
         # Agency = 4 leading columns, not All Data's 3), so its Open
         # column is one further right than the All Data SUM column above.
-        open_col = 4 + excel_reader.STAGE_COUNT + 2  # Inc #,Index,Desc,Agency + 42 stages + VCR -> Open
+        open_col = 4 + EXPECTED_STAGE_COUNT + 2  # Inc #,Index,Desc,Agency + 42 stages + VCR -> Open
         open_cell = ws_sum.cell(row=sum_totals_row, column=open_col)
         done_cell = ws_sum.cell(row=sum_totals_row, column=open_col + 1)
         total_cell = ws_sum.cell(row=sum_totals_row, column=open_col + 2)
@@ -225,7 +229,7 @@ def _run(failures):
         print("4 -- Totals row updates live after a status edit (no re-upload)")
         print("=" * 70)
 
-        before = excel_reader.live_sum_data_totals(display.sum_data)
+        before = excel_reader.live_sum_data_totals(display.sum_data, display.stage_count)
         # find a currently-Open required stage on some item to flip to Done
         target_row = next(
             row for row in display.sum_data
@@ -236,7 +240,7 @@ def _run(failures):
         store.set_stage_status(PROJECT_NAME, increment.name, target_row["index"], target_stage, "Done")
         target_row["stage_status"][target_stage] = "Done"  # mirror the in-memory update the click handler makes
 
-        after = excel_reader.live_sum_data_totals(display.sum_data)
+        after = excel_reader.live_sum_data_totals(display.sum_data, display.stage_count)
         print(f"Before: Open={before['open_total']}, Done={before['done_total']}, %={before['pct_complete']:.4f}")
         print(f"After:  Open={after['open_total']}, Done={after['done_total']}, %={after['pct_complete']:.4f}")
         if after["open_total"] != before["open_total"] - 1:
@@ -262,13 +266,13 @@ def _run(failures):
         growth_increment = store.add_new_increment(growth_project, DEMO_BEFORE)
         display_before = store.get_increment_for_display(growth_project, growth_increment.name)
         totals_before = display_before.all_data_totals
-        sum_totals_before = excel_reader.live_sum_data_totals(display_before.sum_data)
+        sum_totals_before = excel_reader.live_sum_data_totals(display_before.sum_data, display_before.stage_count)
 
         result = store.simulate_comparison(growth_project, growth_increment.name, DEMO_AFTER)
         store.confirm_update(growth_project, growth_increment.name, DEMO_AFTER, result)
         display_after = store.get_increment_for_display(growth_project, growth_increment.name)
         totals_after = display_after.all_data_totals
-        sum_totals_after = excel_reader.live_sum_data_totals(display_after.sum_data)
+        sum_totals_after = excel_reader.live_sum_data_totals(display_after.sum_data, display_after.stage_count)
 
         print(f"total_count: before={display_before.total_count}, after={display_after.total_count}")
         if display_after.total_count - display_before.total_count != 3:

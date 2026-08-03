@@ -291,13 +291,23 @@ share that property for at least this one cell).
 
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 import openpyxl
 import pandas as pd
 
-STAGE_COUNT = 42
+logger = logging.getLogger(__name__)
+
+# NOTE: there is deliberately NO fixed STAGE_COUNT constant anymore.
+# Different increments/projects can legitimately have a different
+# number of real stage columns (confirmed against a real file with
+# only 2 -- see detect_stage_count() below and its callers). Every
+# function below that needs "how many stages does this data have" now
+# takes an explicit stage_count parameter instead of reading a global,
+# so a caller can never accidentally use the wrong file's count.
 
 GRID_SHEETS = [
     "B-Tests",
@@ -317,13 +327,56 @@ IGNORED_BLUE_SHEETS = [
 ]
 
 # --- grid sheet (B-Tests / C-On-Site / D-Off-Site) column layout ---
-GRID_INDEX_COL = 4       # D
+# Description/OPAA/Agency are NOT fixed absolute columns -- confirmed
+# against a real 2-stage file (tests/fixtures/inc8_real_2stage.xlsm):
+# its "TESTS" (Description) column sits at G, not AU, because it only
+# has 2 real stage columns, not 42. What IS constant across both that
+# file and every 42-stage one on hand is each column's OFFSET from the
+# LAST real stage column -- confirmed cell-for-cell against both.
+GRID_INDEX_COL = 4        # D
 GRID_STAGE_FIRST_COL = 5  # E  -> stage 1
-GRID_STAGE_LAST_COL = 46  # AT -> stage 42
-GRID_DESC_COL = 47        # AU
-GRID_OPAA_COL = 49        # AW
-GRID_AGENCY_COL = 50      # AX
+GRID_DESC_COL_OFFSET = 1    # stage_last_col + 1 (AU when 42 stages, G when 2)
+GRID_OPAA_COL_OFFSET = 3    # stage_last_col + 3 (AW when 42 stages, I when 2)
+GRID_AGENCY_COL_OFFSET = 4  # stage_last_col + 4 (AX when 42 stages, J when 2)
 GRID_HEADER_LABEL = "index #"
+
+# The header text each real stage column carries, e.g. "Stage 1
+# Required\n(Select with \"X\")" -- confirmed identical in both the
+# 42-stage and 2-stage real files on hand, just with a different N.
+_STAGE_HEADER_RE = re.compile(r"^\s*Stage\s+(\d+)\s+Required", re.IGNORECASE)
+# A pure runaway-loop guard for detect_stage_count() below, NOT a "real"
+# business limit -- see that function's docstring for why this doesn't
+# assume or cap the actual stage count at 42.
+_STAGE_SCAN_SAFETY_LIMIT = 500
+
+
+def detect_stage_count(ws, header_row: int) -> int:
+    """How many real "Stage N Required" columns this grid sheet
+    actually has, detected by scanning rightward from
+    GRID_STAGE_FIRST_COL in the header row until a column's header
+    text stops matching that pattern (e.g. "TESTS", the Description
+    column that immediately follows the last real stage column -- see
+    module docstring's PARSING STRATEGY section and GRID_DESC_COL_OFFSET
+    above).
+
+    Deliberately NOT hardcoded to 42 anywhere, and deliberately doesn't
+    cap at 42 either -- confirmed against two real files, one with 42
+    stage columns and one with exactly 2 (a legitimately narrower-scope
+    increment, not a malformed file -- see git history). Whatever
+    number of consecutive matching headers is actually found is the
+    real count for THIS file. _STAGE_SCAN_SAFETY_LIMIT only exists to
+    guarantee this terminates even against a pathological/corrupted
+    sheet; no real template should ever come close to it.
+    """
+    count = 0
+    col = GRID_STAGE_FIRST_COL
+    while count < _STAGE_SCAN_SAFETY_LIMIT:
+        value = ws.cell(row=header_row, column=col).value
+        if not isinstance(value, str) or not _STAGE_HEADER_RE.match(value):
+            break
+        count += 1
+        col += 1
+    return count
 
 # --- F-Cons Verif (milestone sheet) column layout ---
 MILESTONE_REF_COL = 4      # D
@@ -451,8 +504,11 @@ def _find_header_row(ws, col: int, label: str, search_rows=range(1, 30)) -> int:
     raise ValueError(f"Could not find header row with '{label}' in column {col} of {ws.title!r}")
 
 
-def parse_grid_sheet(ws) -> list[BlueSheetRecord]:
+def parse_grid_sheet(ws) -> tuple[list[BlueSheetRecord], int]:
     """Shared parser for B-Tests / C-On-Site / D-Off-Site (same schema).
+    Returns (records, stage_count) -- stage_count is THIS sheet's own
+    detect_stage_count() result, since Description/OPAA/Agency's real
+    columns depend on it (see GRID_DESC_COL_OFFSET etc. above).
 
     Identity-based: a row becomes a record because its Index cell (col D) is
     non-blank, full stop -- not because it falls between a computed start
@@ -461,7 +517,8 @@ def parse_grid_sheet(ws) -> list[BlueSheetRecord]:
     the same increment without breaking this parser, as long as the column
     layout (which stage lives in which column, description, agency) stays
     put -- column-layout changes are a job for core/structure_diff.py to
-    *detect*, not for this function to silently adapt to.
+    *detect*, not for this function to silently adapt to. The NUMBER of
+    stage columns is an exception to that -- see detect_stage_count().
 
     Category/sub-category header rows (blank Index, e.g. "STRUCTURAL TESTS"
     text in cols A-C with nothing in D) are simply skipped -- they are not
@@ -475,6 +532,11 @@ def parse_grid_sheet(ws) -> list[BlueSheetRecord]:
     section for the historical detail.)
     """
     header_row = _find_header_row(ws, GRID_INDEX_COL, GRID_HEADER_LABEL)
+    stage_count = detect_stage_count(ws, header_row)
+    stage_last_col = GRID_STAGE_FIRST_COL + stage_count - 1
+    desc_col = stage_last_col + GRID_DESC_COL_OFFSET
+    opaa_col = stage_last_col + GRID_OPAA_COL_OFFSET
+    agency_col = stage_last_col + GRID_AGENCY_COL_OFFSET
 
     records = []
     for r in range(header_row + 1, ws.max_row + 1):
@@ -483,7 +545,7 @@ def parse_grid_sheet(ws) -> list[BlueSheetRecord]:
             continue
         stage_values = {}
         stage_fill_status = {}
-        for stage in range(1, STAGE_COUNT + 1):
+        for stage in range(1, stage_count + 1):
             cell = ws.cell(row=r, column=GRID_STAGE_FIRST_COL + stage - 1)
             stage_values[stage] = cell.value
             fill_status = _fill_color_status(cell)
@@ -494,18 +556,26 @@ def parse_grid_sheet(ws) -> list[BlueSheetRecord]:
                 source_sheet=ws.title,
                 source_row=r,
                 index=index,
-                description=_blank_to_none(ws.cell(row=r, column=GRID_DESC_COL).value),
-                approval_agency=_blank_to_none(ws.cell(row=r, column=GRID_AGENCY_COL).value),
-                opaa_info=_blank_to_none(ws.cell(row=r, column=GRID_OPAA_COL).value),
+                description=_blank_to_none(ws.cell(row=r, column=desc_col).value),
+                approval_agency=_blank_to_none(ws.cell(row=r, column=agency_col).value),
+                opaa_info=_blank_to_none(ws.cell(row=r, column=opaa_col).value),
                 stage_values=stage_values,
                 stage_fill_status=stage_fill_status,
             )
         )
-    return records
+    return records, stage_count
 
 
-def parse_milestone_sheet(ws) -> list[BlueSheetRecord]:
+def parse_milestone_sheet(ws, stage_count: int) -> list[BlueSheetRecord]:
     """Parser for F-Cons Verif: a milestone log, not a per-stage grid.
+
+    stage_count comes from the grid sheets (see parse_workbook) -- this
+    sheet has no stage columns of its own (tracks completion via VCR
+    instead, see module docstring), but its records still need a
+    stage_values dict with the SAME key range 1..stage_count as every
+    grid-sheet record, all None, so downstream code can iterate
+    "every record's stage_values" uniformly without special-casing
+    F-Cons Verif rows.
 
     Already identity-based: every row below the header is checked
     independently, and a row becomes a record because its Reference Number
@@ -528,7 +598,7 @@ def parse_milestone_sheet(ws) -> list[BlueSheetRecord]:
                 description=ws.cell(row=r, column=MILESTONE_DESC_COL).value,
                 approval_agency=None,
                 opaa_info=None,
-                stage_values={stage: None for stage in range(1, STAGE_COUNT + 1)},
+                stage_values={stage: None for stage in range(1, stage_count + 1)},
                 vcr=ws.cell(row=r, column=MILESTONE_VCR_COL).value,
             )
         )
@@ -587,7 +657,7 @@ def parse_project_info(ws) -> dict[str, Any]:
     }
 
 
-def sum_data_stage_headers(stage_names: dict[int, Any]) -> list[str]:
+def sum_data_stage_headers(stage_names: dict[int, Any], stage_count: int) -> list[str]:
     """Sum Data's own stage column headers -- two stacked lines, the real
     Stage No. -> Stage Name lookup above (cached per-increment on
     ui.mock_data.Increment.stage_names) on top and "Stage N" below it,
@@ -601,20 +671,26 @@ def sum_data_stage_headers(stage_names: dict[int, Any]) -> list[str]:
     columns (deliberately UNCHANGED -- this is Sum-Data-only scope) and
     any "Stage N" text elsewhere in the app (tooltips, etc).
 
+    stage_count is the caller's context (a single increment's own
+    increment.stage_count, or the UNION max across every selected
+    increment for the combined case -- see core.combined_export), NOT
+    assumed to be 42 -- confirmed against a real file with only 2 real
+    stage columns.
+
     Falls back to the bare "Stage N" (one line, no name line at all) for
     any stage number missing a name -- shouldn't happen in practice
-    (every real template fills in all 42, including a literal "Not
-    Used" for retired stage numbers), but a missing entry should
-    degrade gracefully, not raise.
+    (every real template fills in every one of its real stage numbers,
+    including a literal "Not Used" for retired ones), but a missing
+    entry should degrade gracefully, not raise.
     """
     headers = []
-    for i in range(1, STAGE_COUNT + 1):
+    for i in range(1, stage_count + 1):
         name = stage_names.get(i)
         headers.append(f"{name}\nStage {i}" if name else f"Stage {i}")
     return headers
 
 
-def stage_header_status(rows: list[dict]) -> dict[int, str | None]:
+def stage_header_status(rows: list[dict], stage_count: int) -> dict[int, str | None]:
     """Aggregate Done/Open status per stage, across EVERY row where that
     stage is required -- for Sum Data's stage column HEADERS (this
     session's color-coding feature), not any individual row's own cell
@@ -639,8 +715,8 @@ def stage_header_status(rows: list[dict]) -> dict[int, str | None]:
     order of work live_sum_data_totals() already does every time Sum
     Data renders, not a new meaningfully-heavier cost.
     """
-    any_required = {stage: False for stage in range(1, STAGE_COUNT + 1)}
-    any_open = {stage: False for stage in range(1, STAGE_COUNT + 1)}
+    any_required = {stage: False for stage in range(1, stage_count + 1)}
+    any_open = {stage: False for stage in range(1, stage_count + 1)}
     for row in rows:
         required = row.get("required_stages", [])
         stage_status = row.get("stage_status", {})
@@ -650,7 +726,7 @@ def stage_header_status(rows: list[dict]) -> dict[int, str | None]:
                 any_open[stage] = True
 
     result: dict[int, str | None] = {}
-    for stage in range(1, STAGE_COUNT + 1):
+    for stage in range(1, stage_count + 1):
         if not any_required[stage]:
             result[stage] = None
         elif any_open[stage]:
@@ -743,31 +819,50 @@ def parse_workbook(path: Any) -> dict[str, Any]:
     open_workbook) -- pass an already-open one when the caller needs to
     reuse it for something else too, to avoid loading the same file twice.
 
-    Returns {"records": [BlueSheetRecord, ...], "project_info": {...}}.
-    Record order is: B-Tests block, then C-On-Site block, then D-Off-Site
-    block, then F-Cons Verif block -- the same order All Data lays them out
-    in.
+    Returns {"records": [BlueSheetRecord, ...], "project_info": {...},
+    "stage_count": int}. Record order is: B-Tests block, then C-On-Site
+    block, then D-Off-Site block, then F-Cons Verif block -- the same
+    order All Data lays them out in.
+
+    stage_count is the MAX of each grid sheet's own detect_stage_count()
+    result -- the three grid sheets share one schema by design (see
+    module docstring), so in a well-formed file all three should agree;
+    max() is a permissive default if one sheet's header row is missing
+    a trailing "Stage N Required" cell that another has (rather than
+    silently truncating to the smallest), and a mismatch is logged so
+    it's visible without being treated as fatal.
     """
     wb = open_workbook(path)
 
     records: list[BlueSheetRecord] = []
+    stage_counts: dict[str, int] = {}
     for sheet_name in GRID_SHEETS:
-        records.extend(parse_grid_sheet(wb[sheet_name]))
-    records.extend(parse_milestone_sheet(wb[MILESTONE_SHEET]))
+        sheet_records, sheet_stage_count = parse_grid_sheet(wb[sheet_name])
+        records.extend(sheet_records)
+        stage_counts[sheet_name] = sheet_stage_count
+
+    if len(set(stage_counts.values())) > 1:
+        logger.warning(
+            "Grid sheets disagree on stage count in %r: %s -- using the max", path, stage_counts
+        )
+    stage_count = max(stage_counts.values())
+
+    records.extend(parse_milestone_sheet(wb[MILESTONE_SHEET], stage_count))
 
     project_info = parse_project_info(wb["A-Project Info"])
 
-    return {"records": records, "project_info": project_info}
+    return {"records": records, "project_info": project_info, "stage_count": stage_count}
 
 
-ALL_DATA_COLUMNS = (
-    ["Inc #", "Index", "Description", "Apprval Agency"]
-    + [f"Stage {i}" for i in range(1, STAGE_COUNT + 1)]
-    + ["VCR", "SUM"]
-)
+def _all_data_columns(stage_count: int) -> list[str]:
+    return (
+        ["Inc #", "Index", "Description", "Apprval Agency"]
+        + [f"Stage {i}" for i in range(1, stage_count + 1)]
+        + ["VCR", "SUM"]
+    )
 
 
-def build_all_data(records: list[BlueSheetRecord], inc_label: Any) -> pd.DataFrame:
+def build_all_data(records: list[BlueSheetRecord], inc_label: Any, stage_count: int) -> pd.DataFrame:
     """Reconstructs All Data from parsed blue-sheet records.
 
     Blank source cells replicate Excel's "formula referencing a blank cell
@@ -786,20 +881,21 @@ def build_all_data(records: list[BlueSheetRecord], inc_label: Any) -> pd.DataFra
             "Description": rec.description if rec.description is not None else zero_default,
             "Apprval Agency": rec.approval_agency if rec.approval_agency is not None else zero_default,
         }
-        for stage in range(1, STAGE_COUNT + 1):
+        for stage in range(1, stage_count + 1):
             v = rec.stage_values.get(stage)
             row[f"Stage {stage}"] = v if v is not None else zero_default
         row["VCR"] = rec.vcr if rec.vcr is not None else zero_default
         row["SUM"] = rec.sum_value
         rows.append(row)
-    return pd.DataFrame(rows, columns=ALL_DATA_COLUMNS)
+    return pd.DataFrame(rows, columns=_all_data_columns(stage_count))
 
 
-SUM_DATA_COLUMNS = (
-    ["Inc #", "Index", "Description", "Apprval Agency"]
-    + [f"Stage {i}" for i in range(1, STAGE_COUNT + 1)]
-    + ["VCR", "Open", "Done", "Total", "% Complete"]
-)
+def _sum_data_columns(stage_count: int) -> list[str]:
+    return (
+        ["Inc #", "Index", "Description", "Apprval Agency"]
+        + [f"Stage {i}" for i in range(1, stage_count + 1)]
+        + ["VCR", "Open", "Done", "Total", "% Complete"]
+    )
 
 
 def stage_marker_status(value: Any) -> Any:
@@ -827,7 +923,7 @@ def stage_marker_status(value: Any) -> Any:
     return value
 
 
-def build_sum_data(records: list[BlueSheetRecord], inc_label: Any) -> pd.DataFrame:
+def build_sum_data(records: list[BlueSheetRecord], inc_label: Any, stage_count: int) -> pd.DataFrame:
     """Reconstructs Sum Data: a filtered, status-transformed view of the
     same records used for All Data. Filter rule and status transform are
     documented in the module docstring.
@@ -852,7 +948,7 @@ def build_sum_data(records: list[BlueSheetRecord], inc_label: Any) -> pd.DataFra
                 continue
 
         stage_statuses = {
-            stage: stage_marker_status(rec.stage_values.get(stage)) for stage in range(1, STAGE_COUNT + 1)
+            stage: stage_marker_status(rec.stage_values.get(stage)) for stage in range(1, stage_count + 1)
         }
         vcr_status = stage_marker_status(rec.vcr)
 
@@ -867,7 +963,7 @@ def build_sum_data(records: list[BlueSheetRecord], inc_label: Any) -> pd.DataFra
             "Description": rec.description,
             "Apprval Agency": rec.approval_agency,
         }
-        for stage in range(1, STAGE_COUNT + 1):
+        for stage in range(1, stage_count + 1):
             row[f"Stage {stage}"] = stage_statuses[stage]
         row["VCR"] = vcr_status
         row["Open"] = open_count
@@ -875,7 +971,7 @@ def build_sum_data(records: list[BlueSheetRecord], inc_label: Any) -> pd.DataFra
         row["Total"] = total
         row["% Complete"] = pct_complete
         rows.append(row)
-    return pd.DataFrame(rows, columns=SUM_DATA_COLUMNS)
+    return pd.DataFrame(rows, columns=_sum_data_columns(stage_count))
 
 
 REPORT_COLUMNS = ["Apprval Agency", "Index", "Description", "Total"]
@@ -943,19 +1039,21 @@ def normalize_workbook(path: Any) -> dict[str, pd.DataFrame]:
     parsed = parse_workbook(path)
     records = parsed["records"]
     inc_label = parsed["project_info"]["record_name"]
+    stage_count = parsed["stage_count"]
 
-    all_data_df = build_all_data(records, inc_label)
-    sum_data_df = build_sum_data(records, inc_label)
+    all_data_df = build_all_data(records, inc_label, stage_count)
+    sum_data_df = build_sum_data(records, inc_label, stage_count)
 
     return {
         "all_data": all_data_df,
         "sum_data": sum_data_df,
         "report": build_report(records),
         "project_info": parsed["project_info"],
+        "stage_count": stage_count,
         "fill_status": fill_status_by_index(records),
         "raw_status": raw_status_by_index(records),
-        "all_data_totals": all_data_totals(all_data_df),
-        "sum_data_totals": sum_data_totals(sum_data_df),
+        "all_data_totals": all_data_totals(all_data_df, stage_count),
+        "sum_data_totals": sum_data_totals(sum_data_df, stage_count),
     }
 
 
@@ -979,7 +1077,7 @@ def _numeric_column_sum(series: pd.Series) -> float:
     return sum(v for v in series if isinstance(v, (int, float)) and not isinstance(v, bool) and not pd.isna(v))
 
 
-def all_data_totals(all_data: pd.DataFrame) -> dict[str, float]:
+def all_data_totals(all_data: pd.DataFrame, stage_count: int) -> dict[str, float]:
     """All Data's bottom totals row: a plain numeric sum of every Stage/
     VCR/SUM column, matching the real file's own formulas exactly (see
     module usage in normalize_workbook()).
@@ -992,14 +1090,14 @@ def all_data_totals(all_data: pd.DataFrame) -> dict[str, float]:
     no live variant needed.
     """
     totals: dict[str, float] = {}
-    for stage in range(1, STAGE_COUNT + 1):
+    for stage in range(1, stage_count + 1):
         totals[f"Stage {stage}"] = _numeric_column_sum(all_data[f"Stage {stage}"])
     totals["VCR"] = _numeric_column_sum(all_data["VCR"])
     totals["SUM"] = _numeric_column_sum(all_data["SUM"])
     return totals
 
 
-def sum_data_totals(sum_data: pd.DataFrame) -> dict[str, Any]:
+def sum_data_totals(sum_data: pd.DataFrame, stage_count: int) -> dict[str, Any]:
     """Sum Data's bottom totals row, computed straight from the RAW
     file-derived Sum Data DataFrame: COUNTIF(colX,"*Open*") per Stage/VCR
     column, plus SUM() of the per-row Open/Done/Total columns, plus
@@ -1020,7 +1118,7 @@ def sum_data_totals(sum_data: pd.DataFrame) -> dict[str, Any]:
     artifact.
     """
     totals: dict[str, Any] = {}
-    for stage in range(1, STAGE_COUNT + 1):
+    for stage in range(1, stage_count + 1):
         totals[f"Stage {stage}"] = int((sum_data[f"Stage {stage}"] == "Open").sum())
     totals["VCR"] = int((sum_data["VCR"] == "Open").sum())
     open_total = int(sum_data["Open"].sum())
@@ -1033,7 +1131,7 @@ def sum_data_totals(sum_data: pd.DataFrame) -> dict[str, Any]:
     return totals
 
 
-def live_sum_data_totals(rows: list[dict]) -> dict[str, Any]:
+def live_sum_data_totals(rows: list[dict], stage_count: int) -> dict[str, Any]:
     """The Sum Data totals row actually rendered in-app and exported --
     computed from the SAME live (required_stages, status.json-backed
     stage_status) data every individual Sum Data row already renders
@@ -1042,6 +1140,13 @@ def live_sum_data_totals(rows: list[dict]) -> dict[str, Any]:
     fresh by every caller (the Sum Data tab on every render, the Excel
     export on every export) -- never cached.
 
+    stage_count is the caller's context, not derived from `rows` --
+    a single increment's own increment.stage_count for the
+    single-increment case, or the UNION max across every selected
+    increment for the combined case (see core.combined_export), so a
+    stage with zero currently-required rows still gets a real 0 entry
+    in stage_open_counts rather than a missing key.
+
     Mirrors sum_data_totals()'s formulas conceptually (per-stage Open
     count, VCR Open count, Open/Done/Total sums, overall % Complete) but
     walking live row dicts instead of the static, file-derived
@@ -1049,7 +1154,7 @@ def live_sum_data_totals(rows: list[dict]) -> dict[str, Any]:
     upload, since status.json is seeded directly from the file's own raw
     status at that point -- see core.status_tracker.
     """
-    stage_open_counts = {stage: 0 for stage in range(1, STAGE_COUNT + 1)}
+    stage_open_counts = {stage: 0 for stage in range(1, stage_count + 1)}
     vcr_open_count = 0
     open_total = 0
     done_total = 0
@@ -1081,7 +1186,7 @@ def live_sum_data_totals(rows: list[dict]) -> dict[str, Any]:
 
 
 def required_stages_by_index(all_data: pd.DataFrame) -> dict[str, list[int]]:
-    """Which of the 42 numbered stages are actually required for each
+    """Which of the real numbered stages are actually required for each
     named Index in an All Data DataFrame -- i.e. have a real marker
     (numeric 1 or "X"/"x"), not blank/0. This is the per-stage
     granularity core/status_tracker.py's carry_forward_status() operates
@@ -1089,10 +1194,18 @@ def required_stages_by_index(all_data: pd.DataFrame) -> dict[str, list[int]]:
     not one flag per Index, so only genuinely-required stages should ever
     need or carry a status.
 
+    Stage count is derived from all_data's OWN "Stage N" columns rather
+    than taking a separate stage_count parameter -- all_data was built
+    by build_all_data(records, inc_label, stage_count) with exactly that
+    many Stage columns (see _all_data_columns()), so this always matches
+    the DataFrame actually passed in, for whichever single increment
+    it's being called on (every real caller passes one increment's own
+    all_data, never a combined/union one -- see ui/mock_data.py).
+
     F-Cons Verif ("F-N") indexes always come back with an empty list --
-    none of their 42 Stage columns are ever populated (see the module
+    none of their Stage columns are ever populated (see the module
     docstring's ALL DATA section: F-Cons Verif tracks completion via a
-    single VCR flag, not the 42-stage grid). Per-stage status tracking is
+    single VCR flag, not the stage grid). Per-stage status tracking is
     scoped to the grid sheets' Stage columns only; VCR is unaffected and
     untracked by this function, a deliberate scope boundary carried over
     from the task this was built for, not an oversight.
@@ -1105,6 +1218,7 @@ def required_stages_by_index(all_data: pd.DataFrame) -> dict[str, list[int]]:
     (0, None, "")` is True, so an `in`-based check alone would silently
     (and wrongly) count every F-Cons Verif stage as required.
     """
+    stage_count = sum(1 for col in all_data.columns if col.startswith("Stage "))
     result: dict[str, list[int]] = {}
     for _, row in all_data.iterrows():
         index = row["Index"]
@@ -1112,7 +1226,7 @@ def required_stages_by_index(all_data: pd.DataFrame) -> dict[str, list[int]]:
             continue
         required = [
             stage
-            for stage in range(1, STAGE_COUNT + 1)
+            for stage in range(1, stage_count + 1)
             if not pd.isna(row[f"Stage {stage}"]) and row[f"Stage {stage}"] not in (0, "")
         ]
         result[index] = required

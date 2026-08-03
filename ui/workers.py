@@ -14,7 +14,9 @@ import logging
 from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
-from PySide6.QtWidgets import QProgressDialog, QWidget
+from PySide6.QtWidgets import QMessageBox, QProgressDialog, QWidget
+
+from core import app_logging
 
 logger = logging.getLogger(__name__)
 
@@ -90,13 +92,40 @@ def run_with_progress(
 
     worker = _Worker(fn, args, kwargs, description=message)
 
+    def _report_callback_failure(which: str):
+        # fn() itself already succeeded (or its failure already went
+        # through _Worker.run()'s own logging) -- this catches on_finished/
+        # on_error THEMSELVES raising, e.g. a widget failing to build
+        # from data that parsed fine but turned out to be unexpected in
+        # some way _Worker.run() had no way to anticipate. Without this,
+        # that exception propagates straight into Qt's signal-delivery
+        # machinery, which on a --windowed build (no console) swallows
+        # it silently: the progress dialog has already closed by this
+        # point, so the net effect is the screen just... does nothing,
+        # with no error and no clue why -- exactly the "loading
+        # indicator then nothing happens" failure mode this exists to
+        # prevent, confirmed against a real file that reproduced it.
+        logger.exception("%s callback failed after: %r", which, message)
+        QMessageBox.critical(
+            parent,
+            "Something Went Wrong",
+            "An unexpected error occurred while handling this. "
+            f"Details were written to the log file:\n\n{app_logging.get_log_path()}",
+        )
+
     def _finished(result):
         dialog.close()
-        on_finished(result)
+        try:
+            on_finished(result)
+        except Exception:  # noqa: BLE001 -- last-resort catch-all, see _report_callback_failure
+            _report_callback_failure("on_finished")
 
     def _error(exc):
         dialog.close()
-        on_error(exc)
+        try:
+            on_error(exc)
+        except Exception:  # noqa: BLE001 -- last-resort catch-all, see _report_callback_failure
+            _report_callback_failure("on_error")
 
     worker.signals.finished.connect(_finished)
     worker.signals.error.connect(_error)

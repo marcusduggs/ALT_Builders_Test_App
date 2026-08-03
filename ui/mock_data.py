@@ -26,9 +26,6 @@ from core import combined_export, excel_reader, increment_matcher, status_tracke
 from core.increment_matcher import MatchResult
 from core.project_store import ProjectStore, VersionRecord
 
-STAGE_COUNT = excel_reader.STAGE_COUNT
-
-
 # ----------------------------------------------------------------------
 # UI-facing view models
 # ----------------------------------------------------------------------
@@ -99,6 +96,19 @@ class Increment:
     # "Stage N" headers, out of scope for the Sum Data formatting pass
     # this field was added for.
     stage_names: dict[int, Any] = field(default_factory=dict)
+    # How many real "Stage N Required" columns THIS increment's own
+    # file actually has -- see core.excel_reader.detect_stage_count().
+    # NOT assumed to be 42: confirmed against a real file with only 2
+    # (tests/fixtures/inc8_real_2stage.xlsm, a legitimately
+    # narrower-scope project, not a malformed file). Every consumer that
+    # used to loop "for stage in range(1, 43)" now uses this instead --
+    # a single increment's own stage_count for single-increment
+    # surfaces, or the UNION max across every selected increment for
+    # the combined view/export (see ui.pages.combined_data_view_page
+    # and core.combined_export), so a shorter increment combined
+    # alongside a longer one still shows every stage the longer one has,
+    # blank/not-applicable for the shorter one's own rows.
+    stage_count: int = 0
 
     @property
     def needs_status_row_count(self) -> int:
@@ -149,6 +159,7 @@ class CombinedView:
     """
 
     increments: list[Increment]  # in on-screen order -- also what export_combined_report(...) is called with directly
+    stage_count: int  # UNION max across every selected increment's own stage_count -- see Increment.stage_count
     all_data_rows: list[dict]
     all_data_totals: dict
     sum_data_rows: list[dict]
@@ -169,18 +180,20 @@ def build_combined_view(increments: list[Increment]) -> CombinedView:
     memory, so building the preview is effectively free once the
     increments themselves are loaded.
     """
+    stage_count = max((inc.stage_count for inc in increments), default=0)
     sum_data_rows = combined_export.build_combined_sum_data_rows(increments)
     return CombinedView(
         increments=increments,
+        stage_count=stage_count,
         all_data_rows=combined_export.build_combined_all_data_rows(increments),
-        all_data_totals=combined_export.combine_all_data_totals(increments),
+        all_data_totals=combined_export.combine_all_data_totals(increments, stage_count),
         sum_data_rows=sum_data_rows,
         # real_rows() strips this list's per-increment subtotal marker
         # rows out first -- same reason core.combined_export's own
         # writer does, see its module docstring: this OVERALL total must
         # not be thrown off by (or double-count) a subtotal marker
         # sitting alongside the real rows in the same flat list.
-        sum_data_totals=excel_reader.live_sum_data_totals(combined_export.real_rows(sum_data_rows)),
+        sum_data_totals=excel_reader.live_sum_data_totals(combined_export.real_rows(sum_data_rows), stage_count),
         report_rows=combined_export.build_combined_report_rows(increments),
         comments_rows=combined_export.build_combined_comments_rows(increments),
         **combined_export.build_combined_changes_data(increments),
@@ -222,9 +235,23 @@ def _none_if_zero(value: Any) -> Any:
     ui/pages/data_view_page.py, deliberately left untouched by this wiring
     pass), so 0 needs to be normalized to None here at the data source
     rather than changing that rendering code.
+
+    Also normalizes float NaN to None -- confirmed against a real file
+    (tests/fixtures/inc8_real_2stage.xlsm) whose F-Cons Verif VCR
+    values are genuinely blank/unfilled: pandas upcasts an All Data
+    "VCR" column mixing real None (F-Cons Verif rows) with real 0s
+    (grid-sheet rows) to float64, coercing those Nones to NaN (the
+    same coercion core.excel_reader.required_stages_by_index() already
+    has to guard against for a different column -- see its docstring).
+    NaN is truthy and compares unequal to everything including itself,
+    so it survives `value == 0` unchanged and goes on to crash
+    QStandardItem() downstream (confirmed) instead of rendering as
+    blank like a real None does.
     """
     if isinstance(value, bool):
         return value
+    if isinstance(value, float) and pd.isna(value):
+        return None
     return None if value == 0 else value
 
 
@@ -658,6 +685,7 @@ class MockDataStore:
             comments=comments,
             all_data_totals=parsed["all_data_totals"],
             stage_names=parsed["project_info"]["stage_names"],
+            stage_count=parsed["stage_count"],
         )
 
     def set_stage_status(self, project_name: str, increment_name: str, index: str, stage: int, status: str) -> None:

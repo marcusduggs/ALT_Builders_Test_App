@@ -20,9 +20,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import openpyxl
 import pandas as pd
 
-from core.excel_reader import STAGE_COUNT, normalize_workbook
+from core.excel_reader import normalize_workbook
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample_increment.xlsm")
+# sample_increment.xlsm's own real stage count -- core.excel_reader no
+# longer has a fixed STAGE_COUNT constant (see its detect_stage_count()),
+# but THIS fixture specifically is known to have 42, confirmed directly
+# against its own header row.
+EXPECTED_STAGE_COUNT = 42
 
 
 # ----------------------------------------------------------------------
@@ -55,7 +60,7 @@ def _read_all_data(ws):
             "index": idx,
             "description": ws.cell(row=r, column=4).value,
             "approval_agency": ws.cell(row=r, column=5).value,
-            "stages": [ws.cell(row=r, column=6 + s).value for s in range(STAGE_COUNT)],
+            "stages": [ws.cell(row=r, column=6 + s).value for s in range(EXPECTED_STAGE_COUNT)],
             "vcr": ws.cell(row=r, column=48).value,
             "sum": ws.cell(row=r, column=49).value,
         }
@@ -73,7 +78,7 @@ def _read_sum_data(ws):
             "index": idx,
             "description": ws.cell(row=r, column=4).value,
             "approval_agency": ws.cell(row=r, column=5).value,
-            "stages": [ws.cell(row=r, column=6 + s).value for s in range(STAGE_COUNT)],
+            "stages": [ws.cell(row=r, column=6 + s).value for s in range(EXPECTED_STAGE_COUNT)],
             "vcr": ws.cell(row=r, column=48).value,
             "open": ws.cell(row=r, column=50).value,
             "done": ws.cell(row=r, column=51).value,
@@ -122,7 +127,7 @@ def engine_all_data_by_index(df):
         out[idx] = {
             "description": row["Description"],
             "approval_agency": row["Apprval Agency"],
-            "stages": [row[f"Stage {s}"] for s in range(1, STAGE_COUNT + 1)],
+            "stages": [row[f"Stage {s}"] for s in range(1, EXPECTED_STAGE_COUNT + 1)],
             "vcr": row["VCR"],
             "sum": row["SUM"],
         }
@@ -135,7 +140,7 @@ def engine_sum_data_by_index(df):
         out[row["Index"]] = {
             "description": row["Description"],
             "approval_agency": row["Apprval Agency"],
-            "stages": [row[f"Stage {s}"] for s in range(1, STAGE_COUNT + 1)],
+            "stages": [row[f"Stage {s}"] for s in range(1, EXPECTED_STAGE_COUNT + 1)],
             "vcr": row["VCR"],
             "open": row["Open"],
             "done": row["Done"],

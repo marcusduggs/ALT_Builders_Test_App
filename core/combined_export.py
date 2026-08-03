@@ -115,14 +115,20 @@ from core.excel_export import (
     _write_sum_data_header_rows,
     _wrapped_row_height,
 )
-from core.excel_reader import STAGE_COUNT, live_sum_data_totals, stage_header_status
+from core.excel_reader import live_sum_data_totals, stage_header_status
 
 INCREMENT_COL = 1
 INDEX_COL = 2
 DESCRIPTION_COL = 3
 AGENCY_COL = 4
 STAGE_FIRST_COL = 5
-STAGE_LAST_COL = STAGE_FIRST_COL + STAGE_COUNT - 1
+# NOTE: no fixed STAGE_LAST_COL constant anymore -- see
+# core.excel_export's matching comment. Combined stage_count is the
+# UNION max across every selected increment's own stage_count (see
+# export_combined_report), computed once per export/render and passed
+# down explicitly, since increments can now legitimately have
+# different stage counts (confirmed against a real 2-stage file
+# combined alongside 42-stage ones).
 
 # Per-increment subtotal row -- bold, like the Grand Total row (_TOTALS_FONT/
 # _TOTALS_FILL, imported above), but a deliberately LIGHTER tint (#eef1f7 vs
@@ -182,8 +188,8 @@ def default_combined_filename(project_name: str, increment_count: int) -> str:
     return f"{clean(project_name)}_Combined_{increment_count}-increments.xlsx"
 
 
-def _stage_headers() -> list[str]:
-    return [f"Stage {i}" for i in range(1, STAGE_COUNT + 1)]
+def _stage_headers(stage_count: int) -> list[str]:
+    return [f"Stage {i}" for i in range(1, stage_count + 1)]
 
 
 def _write_header(ws: Worksheet, headers: list[str]) -> None:
@@ -217,15 +223,21 @@ def _write_sum_data_stage_cell(ws: Worksheet, excel_row: int, stage: int, status
     cell.alignment = _STAGE_ALIGNMENT
 
 
-def combine_all_data_totals(increments: list[Any]) -> dict[str, Any]:
+def combine_all_data_totals(increments: list[Any], stage_count: int) -> dict[str, Any]:
     """Sums each increment's OWN already-computed all_data_totals dict
     together, key by key. Correct and simpler than recomputing from raw
     combined rows from scratch: these are already per-column numeric
     sums (see core.excel_reader.all_data_totals), and addition is
     associative/commutative, so summing the per-increment totals gives
     exactly the same result.
+
+    stage_count is the UNION max across every selected increment (see
+    export_combined_report) -- pre-seeds every "Stage N" key up to that
+    max at 0 so a shorter increment's narrower all_data_totals dict
+    (which only has keys up to ITS OWN stage_count) still leaves every
+    combined column with a real 0 rather than a missing key.
     """
-    combined: dict[str, Any] = {f"Stage {s}": 0 for s in range(1, STAGE_COUNT + 1)}
+    combined: dict[str, Any] = {f"Stage {s}": 0 for s in range(1, stage_count + 1)}
     combined["VCR"] = 0
     combined["SUM"] = 0
     for increment in increments:
@@ -340,7 +352,12 @@ def build_combined_sum_data_rows(increments: list[Any]) -> list[dict]:
             {
                 "increment": increment.name,
                 "is_subtotal": True,
-                "subtotal_totals": live_sum_data_totals(increment.sum_data),
+                # Computed with THIS increment's own (possibly
+                # narrower) stage_count -- its "stage_open_counts" dict
+                # may only have keys up to that count. The writer pads
+                # up to the sheet's wider union stage_count with
+                # .get(stage, 0) -- see _write_sum_data_subtotal_row.
+                "subtotal_totals": live_sum_data_totals(increment.sum_data, increment.stage_count),
             }
         )
     return rows
@@ -425,17 +442,20 @@ def build_combined_comments_rows(increments: list[Any]) -> list[dict]:
     ]
 
 
-def _write_all_data_subtotal_row(ws: Worksheet, row_data: dict) -> None:
+def _write_all_data_subtotal_row(ws: Worksheet, row_data: dict, stage_count: int) -> None:
     """One increment's own subtotal row -- bold + a light tint
     (_SUBTOTAL_FILL), distinct from both regular rows (no fill) and the
     Grand Total row at the very bottom (_TOTALS_FILL, more saturated).
     "subtotal_totals" is that increment's OWN already-computed
     core.excel_reader.all_data_totals() result -- see
-    build_combined_all_data_rows.
+    build_combined_all_data_rows. stage_count is the sheet's UNION max,
+    not this increment's own (possibly narrower) count -- totals.get()
+    naturally returns 0 for any stage number past this specific
+    increment's own real count.
     """
     totals = row_data["subtotal_totals"]
     values = [f"{row_data['increment']} — Subtotal", "", "", ""]
-    for stage in range(1, STAGE_COUNT + 1):
+    for stage in range(1, stage_count + 1):
         values.append(totals.get(f"Stage {stage}", 0))
     values.append(totals.get("VCR", 0))
     values.append(totals.get("SUM", 0))
@@ -447,13 +467,13 @@ def _write_all_data_subtotal_row(ws: Worksheet, row_data: dict) -> None:
             cell.alignment = _STAGE_ALIGNMENT
 
 
-def _write_combined_all_data_sheet(ws: Worksheet, increments: list[Any]) -> None:
-    headers = ["Increment", "Index", "Description", "Approval Agency"] + _stage_headers() + ["VCR", "SUM"]
+def _write_combined_all_data_sheet(ws: Worksheet, increments: list[Any], stage_count: int) -> None:
+    headers = ["Increment", "Index", "Description", "Approval Agency"] + _stage_headers(stage_count) + ["VCR", "SUM"]
     _write_header(ws, headers)
 
     for row_data in build_combined_all_data_rows(increments):
         if row_data["is_subtotal"]:
-            _write_all_data_subtotal_row(ws, row_data)
+            _write_all_data_subtotal_row(ws, row_data, stage_count)
             continue
 
         required = set(row_data.get("required_stages", []))
@@ -464,11 +484,15 @@ def _write_combined_all_data_sheet(ws: Worksheet, increments: list[Any]) -> None
             row_data.get("description") or "",
             row_data.get("approval_agency") or "",
         ]
-        for stage in range(1, STAGE_COUNT + 1):
+        for stage in range(1, stage_count + 1):
             if stage in required:
                 values.append(_STAGE_MARKS.get(stage_status.get(stage), ""))
             else:
-                # Same "0, not blank" convention as core.excel_export.
+                # Same "0, not blank" convention as core.excel_export --
+                # also covers a stage number past THIS increment's own
+                # real stage count (a shorter increment combined
+                # alongside a longer one), which can never be in
+                # `required` either way.
                 values.append(0)
         vcr = row_data.get("vcr")
         values.append(0 if vcr is None else vcr)
@@ -479,44 +503,56 @@ def _write_combined_all_data_sheet(ws: Worksheet, increments: list[Any]) -> None
         _apply_description_wrap(ws, excel_row, column=DESCRIPTION_COL)
         for stage in required:
             _write_stage_cell(ws, excel_row, stage, stage_status.get(stage))
-        for stage in range(1, STAGE_COUNT + 1):
+        for stage in range(1, stage_count + 1):
             if stage not in required:
                 ws.cell(row=excel_row, column=STAGE_FIRST_COL + stage - 1).alignment = _STAGE_ALIGNMENT
 
     # Grand Total -- UNCHANGED by the addition of per-increment subtotals
     # above: sums increment.all_data_totals directly, never derived from
     # the row list this loop just walked.
-    totals = combine_all_data_totals(increments)
+    totals = combine_all_data_totals(increments, stage_count)
     totals_values = ["Totals", "", "", ""]
-    for stage in range(1, STAGE_COUNT + 1):
+    for stage in range(1, stage_count + 1):
         totals_values.append(totals.get(f"Stage {stage}", 0))
     totals_values.append(totals.get("VCR", 0))
     totals_values.append(totals.get("SUM", 0))
     _write_totals_row(ws, totals_values)
 
-    vcr_col = STAGE_LAST_COL + 1
+    stage_last_col = STAGE_FIRST_COL + stage_count - 1
+    vcr_col = stage_last_col + 1
     sum_col = vcr_col + 1
     ws.column_dimensions[get_column_letter(INCREMENT_COL)].width = 40
     ws.column_dimensions[get_column_letter(INDEX_COL)].width = 12
     ws.column_dimensions[get_column_letter(DESCRIPTION_COL)].width = 45
     ws.column_dimensions[get_column_letter(AGENCY_COL)].width = 20
-    for col in range(STAGE_FIRST_COL, STAGE_LAST_COL + 1):
+    for col in range(STAGE_FIRST_COL, stage_last_col + 1):
         ws.column_dimensions[get_column_letter(col)].width = 9
     ws.column_dimensions[get_column_letter(vcr_col)].width = 9
     ws.column_dimensions[get_column_letter(sum_col)].width = 9
     ws.freeze_panes = ws.cell(row=2, column=STAGE_FIRST_COL).coordinate
 
 
-def _write_sum_data_subtotal_row(ws: Worksheet, row_data: dict) -> None:
+def _write_sum_data_subtotal_row(ws: Worksheet, row_data: dict, stage_count: int) -> None:
     """One increment's own subtotal row -- same bold + light-tint
     treatment as _write_all_data_subtotal_row. "subtotal_totals" is
-    core.excel_reader.live_sum_data_totals() called on that ONE
-    increment's own raw sum_data list -- see build_combined_sum_data_rows.
+    core.excel_reader.live_sum_data_totals() called on that increment's
+    own raw sum_data list, with that increment's own (possibly
+    narrower) stage_count -- see build_combined_sum_data_rows -- so its
+    "stage_open_counts" dict may only have keys up to THAT count.
+
+    stage_count HERE, though, is the SHEET's wider union max, not this
+    increment's own -- this row is appended into the same sheet as
+    every other row, with ONE fixed column layout spanning the union
+    max, so the values list must have exactly that many stage entries
+    regardless of how many this particular increment's own totals
+    dict actually has keys for (.get(stage, 0) covers the gap) --
+    getting this wrong misaligns every column after the stage block
+    for this one row.
     """
     totals = row_data["subtotal_totals"]
     values = [f"{row_data['increment']} — Subtotal", "", "", ""]
-    for stage in range(1, STAGE_COUNT + 1):
-        values.append(totals["stage_open_counts"][stage])
+    for stage in range(1, stage_count + 1):
+        values.append(totals["stage_open_counts"].get(stage, 0))
     values.append(totals["vcr_open_count"])
     values.append(totals["open_total"])
     values.append(totals["done_total"])
@@ -529,19 +565,24 @@ def _write_sum_data_subtotal_row(ws: Worksheet, row_data: dict) -> None:
         cell.fill = _SUBTOTAL_FILL
         if cell.column > DESCRIPTION_COL:
             cell.alignment = _STAGE_ALIGNMENT
-    pct_col = STAGE_LAST_COL + 5
+    pct_col = STAGE_FIRST_COL + stage_count - 1 + 5
     if totals["pct_complete"] is not None:
         ws.cell(row=excel_row, column=pct_col).number_format = "0%"
 
 
-def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None:
-    # Stage names are a template property, not a per-increment one --
-    # every increment of the same project is expected to share the same
-    # A-Project Info Stage No. -> Stage Name table (see
-    # core.excel_reader.parse_project_info), so the first selected
-    # increment's is used as the canonical source for this combined
-    # sheet's headers rather than repeating/reconciling it per increment.
-    stage_names = increments[0].stage_names if increments else {}
+def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any], stage_count: int) -> None:
+    # Stage names are a template property, not a per-increment one, so
+    # in the common case every selected increment agrees on a given
+    # stage number's name -- but increments can legitimately have
+    # DIFFERENT stage counts now (a real 2-stage increment combined
+    # alongside 42-stage ones), so a shorter increment's own
+    # stage_names dict simply won't have entries past its own count.
+    # Merging across every selected increment (not just the first)
+    # means a stage name still shows correctly as long as ANY selected
+    # increment defines it.
+    stage_names: dict[int, Any] = {}
+    for inc in increments:
+        stage_names.update(inc.stage_names)
     rows = build_combined_sum_data_rows(increments)
     # real_rows() strips subtotal marker rows out first -- a marker row
     # isn't a real item requiring anything, so it can't skew "is any
@@ -552,12 +593,18 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
         ["Increment", "Index", "Description", "Approval Agency"],
         ["VCR", "Open", "Done", "Total", "% Complete"],
         stage_names,
-        stage_header_status(real_rows(rows)),
+        stage_header_status(real_rows(rows), stage_count),
+        stage_count,
     )
 
+    stage_last_col = STAGE_FIRST_COL + stage_count - 1
     for row_data in rows:
         if row_data["is_subtotal"]:
-            _write_sum_data_subtotal_row(ws, row_data)
+            # The SHEET's union stage_count, matching every other row's
+            # column layout -- see _write_sum_data_subtotal_row's
+            # docstring for why this must NOT be this row's own
+            # increment's (possibly narrower) stage_count.
+            _write_sum_data_subtotal_row(ws, row_data, stage_count)
             continue
 
         live_status = row_data["live_status"]
@@ -570,7 +617,7 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
             row_data.get("description") or "",
             row_data.get("approval_agency") or "",
         ]
-        values += ["" for _ in range(1, STAGE_COUNT + 1)]  # written properly below via _write_sum_data_stage_cell
+        values += ["" for _ in range(1, stage_count + 1)]  # written properly below via _write_sum_data_stage_cell
         values.append(vcr_status)
         values.append(row_data["open_count"])
         values.append(row_data["done_count"])
@@ -583,17 +630,17 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
         for stage, status in live_status.items():
             _write_sum_data_stage_cell(ws, excel_row, stage, status)
         if vcr_status in ("Done", "Open"):
-            vcr_col = STAGE_LAST_COL + 1
+            vcr_col = stage_last_col + 1
             cell = ws.cell(row=excel_row, column=vcr_col)
             cell.fill = _SUM_DATA_STAGE_FILLS[vcr_status]
             cell.font = _SUM_DATA_STAGE_FONTS[vcr_status]
             cell.alignment = _STAGE_ALIGNMENT
 
-        pct_col = STAGE_LAST_COL + 5
+        pct_col = stage_last_col + 5
         if pct is not None:
             ws.cell(row=excel_row, column=pct_col).number_format = "0%"
 
-    vcr_col = STAGE_LAST_COL + 1
+    vcr_col = stage_last_col + 1
     open_col = vcr_col + 1
     done_col = vcr_col + 2
     total_col = vcr_col + 3
@@ -605,10 +652,11 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
     # UNCHANGED by the addition of per-increment subtotals above:
     # real_rows() strips this function's own subtotal marker rows out of
     # `rows` first, so they can't be double-counted or otherwise throw
-    # this off.
-    totals = live_sum_data_totals(real_rows(rows))
+    # this off. Uses the sheet's own UNION stage_count (not any single
+    # increment's), since this total spans every selected increment.
+    totals = live_sum_data_totals(real_rows(rows), stage_count)
     totals_values = ["Totals", "", "", ""]
-    for stage in range(1, STAGE_COUNT + 1):
+    for stage in range(1, stage_count + 1):
         totals_values.append(totals["stage_open_counts"][stage])
     totals_values.append(totals["vcr_open_count"])
     totals_values.append(totals["open_total"])
@@ -623,7 +671,7 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
     ws.column_dimensions[get_column_letter(INDEX_COL)].width = 12
     ws.column_dimensions[get_column_letter(DESCRIPTION_COL)].width = 45
     ws.column_dimensions[get_column_letter(AGENCY_COL)].width = 20
-    for col in range(STAGE_FIRST_COL, STAGE_LAST_COL + 1):
+    for col in range(STAGE_FIRST_COL, stage_last_col + 1):
         ws.column_dimensions[get_column_letter(col)].width = 9
     ws.column_dimensions[get_column_letter(vcr_col)].width = 9
     ws.column_dimensions[get_column_letter(open_col)].width = 9
@@ -775,12 +823,21 @@ def export_combined_report(increments: list[Any], path: str) -> None:
     build_combined_report_rows and their sheet writers are untouched
     either way -- only whether they get called here changes).
     """
+    # UNION max across every selected increment's own stage_count --
+    # computed once here and threaded through both sheet writers, so a
+    # shorter increment (e.g. a real 2-stage one) combined alongside
+    # longer ones still gets every stage column the longer ones have,
+    # blank/not-applicable for its own rows (see
+    # core.excel_reader.detect_stage_count and ui.mock_data.CombinedView's
+    # matching field).
+    stage_count = max((inc.stage_count for inc in increments), default=0)
+
     wb = openpyxl.Workbook()
 
     if excel_export.SHOW_ALL_DATA_AND_REPORT_TABS:
         ws_all = wb.active
         ws_all.title = "All Data"
-        _write_combined_all_data_sheet(ws_all, increments)
+        _write_combined_all_data_sheet(ws_all, increments, stage_count)
         ws_sum = wb.create_sheet("Sum Data")
     else:
         # See core.excel_export.export_increment's matching comment --
@@ -788,7 +845,7 @@ def export_combined_report(increments: list[Any], path: str) -> None:
         # Sum Data rather than left as an extra blank one.
         ws_sum = wb.active
         ws_sum.title = "Sum Data"
-    _write_combined_sum_data_sheet(ws_sum, increments)
+    _write_combined_sum_data_sheet(ws_sum, increments, stage_count)
 
     if excel_export.SHOW_ALL_DATA_AND_REPORT_TABS:
         ws_report = wb.create_sheet("Report")
