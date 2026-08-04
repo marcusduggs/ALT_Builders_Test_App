@@ -19,7 +19,7 @@ body by that same workflow, so release notes and the About dialog's
 changelog can never drift apart from EACH OTHER either.
 """
 
-APP_VERSION = "0.13.0"
+APP_VERSION = "0.13.1"
 
 # Back to the usual cumulative feature list -- v0.12.0's single "no
 # functional changes" line covered only that one test-only release (see
@@ -74,4 +74,10 @@ goes wrong
 color-coded (red/green) based on whether every item for that stage \
 is complete
 - The update-available dialog now also shows a copyable link, for \
-browsers that don't open automatically"""
+browsers that don't open automatically
+- Fixed a bug where projects with a different number of stages than \
+usual (e.g. a narrower-scope increment) could cause a crash or make \
+the app appear to do nothing -- the number of stages is now detected \
+automatically from each file instead of assumed to always be the same
+- Background errors that could previously fail silently now show a \
+clear message instead"""
