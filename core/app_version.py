@@ -19,7 +19,7 @@ body by that same workflow, so release notes and the About dialog's
 changelog can never drift apart from EACH OTHER either.
 """
 
-APP_VERSION = "0.13.1"
+APP_VERSION = "0.13.2"
 
 # Back to the usual cumulative feature list -- v0.12.0's single "no
 # functional changes" line covered only that one test-only release (see
@@ -80,4 +80,10 @@ usual (e.g. a narrower-scope increment) could cause a crash or make \
 the app appear to do nothing -- the number of stages is now detected \
 automatically from each file instead of assumed to always be the same
 - Background errors that could previously fail silently now show a \
-clear message instead"""
+clear message instead
+- Fixed a bug where an item with no VCR marking yet was silently \
+excluded from Sum Data's Open/Done/Total counts instead of counting \
+as Open, which could make a project look more complete than it \
+actually was
+- Fixed a crash when combining increments with different numbers of \
+stages in View Combined Data's Sum Data tab"""

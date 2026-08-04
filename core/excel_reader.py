@@ -923,6 +923,44 @@ def stage_marker_status(value: Any) -> Any:
     return value
 
 
+def vcr_marker_status(value: Any) -> Any:
+    """VCR-specific counterpart to stage_marker_status() -- identical
+    "X"/1/other-text handling, but a genuinely blank/None/0/"" source
+    value defaults to "Open" instead of stage_marker_status()'s None.
+
+    Confirmed against a real file (tests/fixtures/inc8_real_2stage.xlsm)
+    whose F-Cons Verif VCR column was never filled in for any of its 8
+    real, active items (each with real signature data in its other
+    columns) -- stage_marker_status()'s None meant those rows
+    contributed to neither Open nor Done anywhere Open/Done/Total is
+    computed, silently excluding real, unverified items from the count
+    entirely, rather than showing them as still-incomplete. Every
+    OTHER "required but unmarked" concept in this app -- a grid stage
+    with no status.json entry -- already defaults to Open, never to
+    silent exclusion (see ui.pages.data_view_page's module docstring);
+    this brings VCR in line with that same convention.
+
+    Deliberately does NOT change how a genuine non-blank marker like
+    "NA" behaves: stage_marker_status("NA") already falls through to
+    `return value` unchanged (it doesn't match "x", 1, or the blank
+    check), so this function's None -> "Open" substitution never even
+    applies to it -- "NA" is a real, explicit "does not apply" marker
+    a preparer chose to type, categorically different from a cell
+    nobody ever touched, and stays excluded from Open/Done/Total
+    exactly as before (confirmed against sample_increment.xlsm's own
+    "NA" rows, which the real template's own hand-maintained Sum Data
+    sheet also shows as excluded, not Open).
+
+    Only meaningful for VCR -- stage cells must NOT get this
+    treatment: a blank stage cell means "not required for this item"
+    (required_stages_by_index() already scopes status display to only
+    genuinely-required stages), not "required but unmarked", so
+    stage_marker_status() itself stays unchanged for that case.
+    """
+    status = stage_marker_status(value)
+    return "Open" if status is None else status
+
+
 def build_sum_data(records: list[BlueSheetRecord], inc_label: Any, stage_count: int) -> pd.DataFrame:
     """Reconstructs Sum Data: a filtered, status-transformed view of the
     same records used for All Data. Filter rule and status transform are
@@ -950,7 +988,16 @@ def build_sum_data(records: list[BlueSheetRecord], inc_label: Any, stage_count: 
         stage_statuses = {
             stage: stage_marker_status(rec.stage_values.get(stage)) for stage in range(1, stage_count + 1)
         }
-        vcr_status = stage_marker_status(rec.vcr)
+        # vcr_marker_status()'s blank-defaults-to-Open ONLY applies to
+        # milestone (F-Cons Verif) records -- a grid-sheet record's vcr
+        # field is always None (grid records never populate it at all,
+        # see BlueSheetRecord.vcr's default), meaning "VCR doesn't
+        # apply to this item", not "required but unverified". Using
+        # vcr_marker_status() unconditionally here was confirmed (during
+        # this fix's own validation) to wrongly give every grid-sheet
+        # Sum Data row a phantom "Open" VCR contribution, inflating
+        # Open/Total for items that have nothing to do with VCR.
+        vcr_status = vcr_marker_status(rec.vcr) if is_milestone else stage_marker_status(rec.vcr)
 
         open_count = sum(1 for v in list(stage_statuses.values()) + [vcr_status] if v == "Open")
         done_count = sum(1 for v in list(stage_statuses.values()) + [vcr_status] if v == "Done")

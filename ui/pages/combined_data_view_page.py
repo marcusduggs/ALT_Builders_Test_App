@@ -377,7 +377,7 @@ class CombinedDataViewPage(QWidget):
                     _subtotal_item(""), _subtotal_item(""), _subtotal_item(""),
                 ]
                 for stage in range(1, self.view.stage_count + 1):
-                    items.append(_subtotal_item(str(totals["stage_open_counts"][stage])))
+                    items.append(_subtotal_item(str(totals["stage_open_counts"].get(stage, 0))))
                 items.append(_subtotal_item(str(totals["vcr_open_count"])))
                 items.append(_subtotal_item(str(totals["open_total"])))
                 items.append(_subtotal_item(str(totals["done_total"])))

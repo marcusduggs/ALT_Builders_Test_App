@@ -291,16 +291,40 @@ def _sum_data_rows(all_data_rows: list[dict], sum_data_df: Any) -> list[dict]:
     disagrees with the file's raw marker) is what this tab is for
     surfacing, not a frozen recomputation from the file.
 
-    "vcr" is passed through core.excel_reader.stage_marker_status()
-    here -- F-Cons Verif items (required_stages always empty for them)
-    track completion via this one field instead of the 42-stage grid,
-    so it needs the exact same raw-"X"/"1" -> "Done"/"Open" treatment
-    stage cells already get from status.json, rather than surfacing the
-    file's raw marker unchanged. VCR has no status.json entry of its
-    own to override it with (required_stages_by_index() explicitly
-    scopes carryover to the Stage columns only -- see
-    core/status_tracker.py), so the raw marker IS the live status here,
-    unlike stage_status above.
+    "vcr" is passed through core.excel_reader.vcr_marker_status() --
+    but ONLY for F-Cons Verif rows. Those items (required_stages always
+    empty for them) track completion via this one field instead of the
+    42-stage grid, so they need the exact same raw-"X"/"1" ->
+    "Done"/"Open" treatment stage cells already get from status.json,
+    rather than surfacing the file's raw marker unchanged. VCR has no
+    status.json entry of its own to override it with
+    (required_stages_by_index() explicitly scopes carryover to the
+    Stage columns only -- see core/status_tracker.py), so the raw
+    marker IS the live status here, unlike stage_status above --
+    vcr_marker_status() (not the plain stage_marker_status() stage
+    cells use) specifically because a genuinely blank VCR cell on an
+    F-Cons Verif row means "not yet verified", not "not required" the
+    way a blank STAGE cell does: every F-Cons Verif row is subject to
+    VCR tracking unconditionally, so an unmarked one should default to
+    "Open" (confirmed against a real file whose VCR column was never
+    filled in for 8 real, active items), matching how an unset
+    required grid stage already defaults to Open above. "NA" is
+    unaffected -- it's a real, explicit marker someone typed, not a
+    blank cell, and stays excluded from Open/Done/Total exactly as
+    before (see vcr_marker_status()'s own docstring).
+
+    A GRID-sheet row's own "vcr" is always None (grid records never
+    populate BlueSheetRecord.vcr at all -- only parse_milestone_sheet()
+    does), genuinely meaning "not applicable", the same way a blank
+    STAGE cell does -- NOT "required but unverified". Applying
+    vcr_marker_status() there too was tried and confirmed wrong during
+    this fix's own validation: it gave every grid-sheet Sum Data row a
+    phantom "Open" VCR contribution, inflating Open/Total for items
+    that have nothing to do with VCR. required_stages is only ever
+    empty here for an F-Cons Verif row -- build_sum_data()'s own
+    inclusion filter guarantees a grid row always has at least one
+    required stage to be in sum_data_df at all -- so that's what's used
+    below to pick the right transform.
     """
     all_data_by_index = {row["index"]: row for row in all_data_rows}
     rows = []
@@ -308,6 +332,8 @@ def _sum_data_rows(all_data_rows: list[dict], sum_data_df: Any) -> list[dict]:
         source = all_data_by_index.get(index)
         if source is None:
             continue
+        is_milestone_row = not source["required_stages"]
+        vcr_transform = excel_reader.vcr_marker_status if is_milestone_row else excel_reader.stage_marker_status
         rows.append(
             {
                 "index": index,
@@ -315,7 +341,7 @@ def _sum_data_rows(all_data_rows: list[dict], sum_data_df: Any) -> list[dict]:
                 "approval_agency": source["approval_agency"],
                 "required_stages": source["required_stages"],
                 "stage_status": source["stage_status"],
-                "vcr": excel_reader.stage_marker_status(source["vcr"]),
+                "vcr": vcr_transform(source["vcr"]),
             }
         )
     return rows
