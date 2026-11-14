@@ -1,17 +1,16 @@
 """Single source of truth for the app's displayed version and changelog
 summary -- shown in the About dialog (ui/dialogs/about_dialog.py).
 
-APP_VERSION is currently hand-bumped per release (as of the 0.8.0
-release, by explicit request -- see git history) rather than left at
-the "0.0.0-dev" placeholder this file previously documented.
-.github/workflows/release.yml still OVERWRITES this line in its own CI
+APP_VERSION is back to the "0.0.0-dev" placeholder (by explicit
+request, reversing the v0.8.0-era decision to hand-bump it per release
+-- see git history for that earlier rationale, no longer in effect).
+.github/workflows/release.yml OVERWRITES this line in its own CI
 workspace (never committed back) with the exact tag being released,
 immediately before packaging, so a shipped .exe's version can never
 drift from the tag regardless of whatever value is committed here --
-but since that value is no longer "0.0.0-dev", local/dev and ordinary
-main-push CI builds now show the last-released version number too,
-not an obvious "unreleased" marker. Remember to bump this by hand on
-each release if that distinction matters again.
+and since that committed value IS "0.0.0-dev" again, local/dev and
+ordinary main-push CI builds now show an obvious "unreleased" marker
+instead of the last-released version number.
 
 CHANGELOG_SUMMARY IS still manually maintained -- prose can't be
 derived from a tag name -- and is reused verbatim as the GitHub Release
@@ -19,7 +18,7 @@ body by that same workflow, so release notes and the About dialog's
 changelog can never drift apart from EACH OTHER either.
 """
 
-APP_VERSION = "0.13.2"
+APP_VERSION = "0.0.0-dev"
 
 # Back to the usual cumulative feature list -- v0.12.0's single "no
 # functional changes" line covered only that one test-only release (see
@@ -86,4 +85,20 @@ excluded from Sum Data's Open/Done/Total counts instead of counting \
 as Open, which could make a project look more complete than it \
 actually was
 - Fixed a crash when combining increments with different numbers of \
-stages in View Combined Data's Sum Data tab"""
+stages in View Combined Data's Sum Data tab
+- Fixed grid items' Done/Open status to come from the "HCAI/FDD Use" \
+column instead of the stage's own "Required" marker, which was \
+marking an item Done just because a stage applied to it, not because \
+it was actually signed off -- existing projects keep their current \
+Done/Open marks as-is; only increments uploaded fresh after this \
+update get the corrected status automatically
+- Sum Data now has one row per project and stage, with a Project # \
+column, instead of one row per item with a column for every stage
+- Added Notes and Completion Date columns to the Sum Data export
+- Fixed real HMR/SMR project files with very long names, and files \
+using an older template, that previously failed to load
+- Added filtering to the Sum Data tables, both in the app and as real \
+Excel column filters in the exported file
+- Fixed several layout issues: the increments table cutting off \
+early, narrow columns clipping their own headers, and long project \
+names overflowing their display area"""

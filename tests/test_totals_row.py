@@ -119,11 +119,48 @@ def _run(failures):
         if len(sum_data_df) != 103:
             failures.append(f"1: fixture assumption broken -- expected our Sum Data reconstruction to have 103 rows, got {len(sum_data_df)}")
 
-        # independent cross-check, not reusing sum_data_totals()/live_sum_data_totals() themselves
-        stage_and_vcr_cols = [f"Stage {i}" for i in range(1, EXPECTED_STAGE_COUNT + 1)] + ["VCR"]
-        expected_open = int((sum_data_df[stage_and_vcr_cols] == "Open").sum().sum())
-        expected_done = int((sum_data_df[stage_and_vcr_cols] == "Done").sum().sum())
-        expected_total = int(sum_data_df["Total"].sum())
+        # Independent cross-check, not reusing sum_data_totals()/
+        # live_sum_data_totals() themselves -- re-derives expected
+        # Open/Done/Total straight from the parsed BlueSheetRecords
+        # instead: a stage is required using the UNCHANGED raw-marker
+        # rule (stage_marker_status(value) in ("Done","Open")), but
+        # completion for a GRID record now comes from whether its
+        # hcai_fdd_use cell is filled in, not from the marker itself --
+        # see core.excel_reader.raw_status_by_index()'s docstring (direct
+        # client correction: the "Stage N Required" marker only means a
+        # stage applies, not that it's done). F-Cons Verif (milestone)
+        # records are untouched by that correction and keep using
+        # vcr_marker_status() exactly as before.
+        #
+        # NOTE: this reads the SAME underlying records build_sum_data()
+        # does, but intentionally does NOT reuse sum_data_df's own Stage
+        # columns for the Open/Done split -- those still reflect the OLD
+        # (pre-correction) raw-marker rule on purpose, since
+        # build_sum_data() is a static, file-derived reconstruction used
+        # only for ground-truth drift comparisons, never read by the live
+        # app (see raw_totals below, step 1's last check).
+        records = excel_reader.parse_workbook(SAMPLE)["records"]
+        expected_open = expected_done = 0
+        for rec in records:
+            if not rec.index:
+                continue
+            if rec.source_sheet == excel_reader.MILESTONE_SHEET:
+                vcr_status = excel_reader.vcr_marker_status(rec.vcr)
+                if vcr_status == "Done":
+                    expected_done += 1
+                elif vcr_status == "Open":
+                    expected_open += 1
+                continue
+            hcai_filled = rec.hcai_fdd_use is not None and str(rec.hcai_fdd_use).strip() != ""
+            completion = "Done" if hcai_filled else "Open"
+            for value in rec.stage_values.values():
+                if excel_reader.stage_marker_status(value) not in ("Done", "Open"):
+                    continue
+                if completion == "Done":
+                    expected_done += 1
+                else:
+                    expected_open += 1
+        expected_total = expected_open + expected_done
         print(f"Independently cross-checked expected totals for OUR row set: Open={expected_open}, Done={expected_done}, Total={expected_total}")
 
         live_totals = excel_reader.live_sum_data_totals(display.sum_data, display.stage_count)
@@ -139,19 +176,32 @@ def _run(failures):
             failures.append(f"1: Sum Data % Complete should be {expected_done}/{expected_total}, got {live_totals['pct_complete']}")
 
         # raw-file-derived sum_data_totals() (normalize_workbook()'s own
-        # artifact) should match live_sum_data_totals() on a fresh upload
-        # -- status.json is seeded directly from the file's raw status at
-        # upload time, so live and raw agree until something is edited
-        # (see step 4).
+        # artifact, from build_sum_data()) is now EXPECTED to diverge
+        # from live_sum_data_totals() even on a fresh upload -- a direct,
+        # intentional consequence of the HCAI/FDD-Use completion-source
+        # fix: build_sum_data() is deliberately left on the OLD raw-
+        # marker rule (it's a static ground-truth-comparison artifact,
+        # never read by the live app -- see raw_status_by_index()'s
+        # docstring), while live_sum_data_totals() now uses the client-
+        # corrected rule. What's checked here is that raw_totals is
+        # STILL exactly what the old rule produces (291/227/518,
+        # confirmed via the real file's own cached Sum Data formulas in
+        # this file's own docstring) -- i.e. that this fix didn't
+        # accidentally touch build_sum_data() too, not that it matches
+        # live.
         raw_totals = parsed["sum_data_totals"]
         print(f"Sum Data raw-file totals: Open={raw_totals['open_total']}, Done={raw_totals['done_total']}, "
               f"Total={raw_totals['grand_total']}")
-        if (raw_totals["open_total"], raw_totals["done_total"], raw_totals["grand_total"]) != \
-           (live_totals["open_total"], live_totals["done_total"], live_totals["grand_total"]):
+        if (raw_totals["open_total"], raw_totals["done_total"], raw_totals["grand_total"]) != (291, 227, 518):
             failures.append(
-                f"1: raw sum_data_totals() should equal live_sum_data_totals() on a fresh upload, got "
-                f"raw={raw_totals} vs live open/done/total="
-                f"({live_totals['open_total']}, {live_totals['done_total']}, {live_totals['grand_total']})"
+                f"1: raw sum_data_totals() (build_sum_data()'s OLD, raw-marker-driven reconstruction) "
+                f"should be unchanged at (291, 227, 518), got {raw_totals}"
+            )
+        if (live_totals["open_total"], live_totals["done_total"]) == (raw_totals["open_total"], raw_totals["done_total"]):
+            failures.append(
+                "1: live_sum_data_totals() and raw sum_data_totals() should now DIVERGE on this fixture "
+                "(live uses the corrected HCAI/FDD-Use rule, raw deliberately still uses the old marker "
+                "rule) -- if they match, either the fix regressed or this fixture assumption changed."
             )
 
         # ------------------------------------------------------------
@@ -200,13 +250,13 @@ def _run(failures):
 
         ws_sum = wb_out["Sum Data"]
         sum_totals_row = ws_sum.max_row
-        # Sum Data has an Inc # column All Data doesn't (Inc #,Index,Desc,
-        # Agency = 4 leading columns, not All Data's 3), so its Open
-        # column is one further right than the All Data SUM column above.
-        open_col = 4 + EXPECTED_STAGE_COUNT + 2  # Inc #,Index,Desc,Agency + 42 stages + VCR -> Open
-        open_cell = ws_sum.cell(row=sum_totals_row, column=open_col)
-        done_cell = ws_sum.cell(row=sum_totals_row, column=open_col + 1)
-        total_cell = ws_sum.cell(row=sum_totals_row, column=open_col + 2)
+        # Sum Data is long-format now (one row per (Index, Stage), not one
+        # per item with 42 stage columns) -- its Open/Done/Total columns
+        # sit at fixed positions regardless of stage_count, see
+        # core.excel_export's SUM_DATA_* column constants.
+        open_cell = ws_sum.cell(row=sum_totals_row, column=excel_export.SUM_DATA_OPEN_COL)
+        done_cell = ws_sum.cell(row=sum_totals_row, column=excel_export.SUM_DATA_DONE_COL)
+        total_cell = ws_sum.cell(row=sum_totals_row, column=excel_export.SUM_DATA_TOTAL_COL)
         print(f"Exported Sum Data totals row ({sum_totals_row}): Open={open_cell.value!r}, Done={done_cell.value!r}, "
               f"Total={total_cell.value!r} (types: {type(open_cell.value).__name__}/{type(done_cell.value).__name__}/{type(total_cell.value).__name__})")
         if (open_cell.value, done_cell.value, total_cell.value) != \

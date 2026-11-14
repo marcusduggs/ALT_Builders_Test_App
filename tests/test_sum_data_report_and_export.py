@@ -219,18 +219,18 @@ def _run(failures):
         ws_sum = wb_out["Sum Data"]
         if not ws_sum["A1"].font.bold:
             failures.append("4: Sum Data header row should be bold")
-        # Sum Data freezes one more leading column than All Data (E, not
-        # D) -- it has an Inc # column All Data deliberately doesn't
-        # (core.excel_export.SUM_DATA_* column constants vs All Data's
-        # own INDEX_COL/DESCRIPTION_COL/etc.) -- AND one more row (E3,
-        # not E2): its stage columns have a real two-row stacked header
-        # (stage name row 1, "Stage N" row 2 -- see
-        # core.excel_export._write_sum_data_header_rows), so data starts
-        # at row 3, not 2, unlike All Data's single-row header.
-        if ws_sum.freeze_panes != "E3":
-            failures.append(f"4: Sum Data should freeze both header rows + first 4 columns (E3), got {ws_sum.freeze_panes}")
-        if ws_sum.max_row - 2 != len(display2.sum_data) + 1:
-            failures.append(f"4: Sum Data sheet should have one row per item + 1 totals row ({ws_sum.max_row - 2} vs {len(display2.sum_data) + 1})")
+        # Sum Data is long-format now (one row per (Index, Stage), not one
+        # per item with stage columns) -- a single header row, same as
+        # All Data, just with its Stage # column as the freeze boundary
+        # instead of the first stage column (core.excel_export.SUM_DATA_STAGE_COL).
+        if ws_sum.freeze_panes != "F2":
+            failures.append(f"4: Sum Data should freeze header row + first 5 columns (F2), got {ws_sum.freeze_panes}")
+        expected_sum_data_row_count = len(excel_reader.expand_sum_data_rows(display2.sum_data))
+        if ws_sum.max_row - 1 != expected_sum_data_row_count + 1:
+            failures.append(
+                f"4: Sum Data sheet should have one row per (Index, Stage) + 1 totals row "
+                f"({ws_sum.max_row - 1} vs {expected_sum_data_row_count + 1})"
+            )
         if "% Complete" not in [c.value for c in ws_sum[1]]:
             failures.append("4: Sum Data sheet should have a % Complete column")
 
@@ -262,14 +262,12 @@ def _run(failures):
         print("4b -- Description cells have wrap_text enabled")
         print("=" * 70)
 
-        # Sum Data's Description column is one over from All Data's (its
-        # own SUM_DATA_DESCRIPTION_COL, not DESCRIPTION_COL), and its
-        # first DATA row is one further down too (3, not 2) -- its
-        # header is two real rows, not one (see the freeze_panes check
-        # above) -- same Inc #/two-row-header offsets throughout.
+        # Sum Data's Description column is at its own SUM_DATA_DESCRIPTION_COL
+        # position (not All Data's DESCRIPTION_COL) -- both sheets now have
+        # a single header row, so both start their data at row 2.
         for sheet_name, ws, description_col, first_data_row in (
             ("All Data", ws_all, excel_export.DESCRIPTION_COL, 2),
-            ("Sum Data", ws_sum, excel_export.SUM_DATA_DESCRIPTION_COL, 3),
+            ("Sum Data", ws_sum, excel_export.SUM_DATA_DESCRIPTION_COL, 2),
         ):
             for r in range(first_data_row, ws.max_row):  # excludes the bottom totals row (blank Description, no wrap needed)
                 cell = ws.cell(row=r, column=description_col)

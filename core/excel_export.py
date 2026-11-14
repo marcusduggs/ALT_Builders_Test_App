@@ -15,12 +15,15 @@ version is read back correctly by the app's own fill-color status
 seeding (core.status_tracker.apply_file_derived_seed) -- export and
 re-import round-trip the status, not just the raw data.
 
-Sum Data's stage cells intentionally look different: literal "Done"/
+Sum Data's Status cells intentionally look different: literal "Done"/
 "Open" text on light green/pink fills matching Excel's own built-in
 "Good"/"Bad" conditional-formatting cell styles (see
-_write_sum_data_stage_cell), not All Data's dark-fill "X"/"1" marks --
+_write_sum_data_status_cell), not All Data's dark-fill "X"/"1" marks --
 Sum Data is a status report, not a re-importable source sheet, so it's
-free to read the way a human expects a status column to read.
+free to read the way a human expects a status column to read. It's also
+long, not wide: one row per (Index, Stage) actually required for that
+item (core.excel_reader.expand_sum_data_rows), not one row per item
+with every stage pivoted into its own column.
 
 Changes is three independent tables stacked in one sheet -- see
 _write_changes_sheet -- State Revision Log (the state's own J-Changes
@@ -40,11 +43,11 @@ import re
 from typing import Any
 
 import openpyxl
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from core.excel_reader import live_sum_data_totals, stage_header_status
+from core.excel_reader import expand_sum_data_rows, live_sum_data_totals
 
 # Single toggle controlling All Data/Report tab-and-sheet VISIBILITY
 # across all four Sum Data surfaces (this file's export_increment,
@@ -83,31 +86,9 @@ _SUM_DATA_STAGE_FONTS = {
     "Done": Font(color="FF006100"),
     "Open": Font(color="FF9C0006"),
 }
-# Same colors as _SUM_DATA_STAGE_FONTS above, bold -- for the stage
-# HEADER color-coding feature (core.excel_reader.stage_header_status),
-# distinct from the (deliberately non-bold) per-row cell font: a header
-# should stay visually bold even when colored, matching every other
-# header cell.
-_SUM_DATA_STAGE_HEADER_FONTS = {
-    "Done": Font(color="FF006100", bold=True),
-    "Open": Font(color="FF9C0006", bold=True),
-}
 _HEADER_FONT = Font(bold=True)
 _BOLD_FONT = Font(bold=True)
 _DESCRIPTION_ALIGNMENT = Alignment(wrap_text=True, vertical="top")
-
-# Sum Data header row's own border -- a thin box around every header
-# cell, so "bold" actually reads as a distinct header band against the
-# data rows below it instead of just heavier text. Scoped to Sum Data
-# specifically (applied in _write_sum_data_sheet, not the shared
-# _write_header() All Data/Report also call) -- out of scope for this
-# pass, see module docstring.
-_SUM_DATA_HEADER_BORDER = Border(
-    left=Side(style="thin", color="FF000000"),
-    right=Side(style="thin", color="FF000000"),
-    top=Side(style="thin", color="FF000000"),
-    bottom=Side(style="thin", color="FF000000"),
-)
 
 # Bottom totals row -- bold + a subtle tint, matching
 # ui.pages.data_view_page's TOTALS_ROW_BACKGROUND exactly (#e4e8f0) so
@@ -124,16 +105,32 @@ STAGE_FIRST_COL = 4
 # column" is now computed as STAGE_FIRST_COL + stage_count - 1 wherever
 # it's needed, from whatever stage_count the caller was given.
 
-# Sum Data's own column layout -- one column wider than All Data's
-# above (a leading Inc # column All Data doesn't have -- see module
-# docstring), so it needs its own constants rather than reusing
-# All Data's (which _write_all_data_sheet/_write_stage_cell still do,
-# unchanged).
-SUM_DATA_INCREMENT_COL = 1
-SUM_DATA_INDEX_COL = 2
-SUM_DATA_DESCRIPTION_COL = 3
-SUM_DATA_AGENCY_COL = 4
-SUM_DATA_STAGE_FIRST_COL = 5
+# Sum Data's own column layout -- one row per (Index, Stage) actually
+# required for that item (see core.excel_reader.expand_sum_data_rows),
+# not All Data's per-item stage-pivot layout, so it needs its own
+# constants entirely. Shared verbatim by core.combined_export's combined
+# Sum Data sheet too -- the only difference there is the "Inc #" header
+# label becomes "Increment"; every column POSITION is identical, since
+# Project # replaces the column All Data's combined sheet uses for its
+# own leading "Increment" column.
+SUM_DATA_PROJECT_COL = 1
+SUM_DATA_INCREMENT_COL = 2
+SUM_DATA_INDEX_COL = 3
+SUM_DATA_DESCRIPTION_COL = 4
+SUM_DATA_AGENCY_COL = 5
+SUM_DATA_STAGE_COL = 6
+SUM_DATA_STATUS_COL = 7
+# Notes/Completion Date -- always blank on export (see SUM_DATA_HEADERS'
+# docstring): purely two manually-fillable columns for the client, no
+# underlying app data, no read-back, no merge/carry-forward logic. That
+# is explicitly parked for a later round -- this pass only adds the
+# columns themselves.
+SUM_DATA_NOTES_COL = 8
+SUM_DATA_COMPLETION_DATE_COL = 9
+SUM_DATA_OPEN_COL = 10
+SUM_DATA_DONE_COL = 11
+SUM_DATA_TOTAL_COL = 12
+SUM_DATA_PCT_COL = 13
 
 # Changes sheet -- three stacked tables sharing one column grid (see
 # _write_changes_sheet). State Revision Log's long text (Synopsis),
@@ -221,12 +218,20 @@ def _write_stage_cell(ws: Worksheet, excel_row: int, stage: int, status: str | N
         cell.alignment = _STAGE_ALIGNMENT
 
 
-def _write_sum_data_stage_cell(ws: Worksheet, excel_row: int, stage: int, status: str) -> None:
-    cell = ws.cell(
-        row=excel_row, column=SUM_DATA_STAGE_FIRST_COL + stage - 1, value=_SUM_DATA_STAGE_LABELS[status]
-    )
-    cell.fill = _SUM_DATA_STAGE_FILLS[status]
-    cell.font = _SUM_DATA_STAGE_FONTS[status]
+def _write_sum_data_status_cell(ws: Worksheet, excel_row: int, status: Any) -> None:
+    """Writes one Sum Data row's single Status cell -- "Done"/"Open" get
+    the light green/pink fill + matching font (see _SUM_DATA_STAGE_FILLS/
+    _SUM_DATA_STAGE_FONTS above); any other real value (e.g. "NA", a
+    real marker someone typed that's excluded from Open/Done/Total --
+    see core.excel_reader.vcr_marker_status) is written as plain text,
+    uncolored, rather than raising on an unrecognized status.
+    """
+    label = _SUM_DATA_STAGE_LABELS.get(status, status or "")
+    cell = ws.cell(row=excel_row, column=SUM_DATA_STATUS_COL, value=label)
+    fill = _SUM_DATA_STAGE_FILLS.get(status)
+    if fill is not None:
+        cell.fill = fill
+        cell.font = _SUM_DATA_STAGE_FONTS[status]
     cell.alignment = _STAGE_ALIGNMENT
 
 
@@ -295,180 +300,100 @@ def _write_all_data_sheet(
     ws.freeze_panes = ws.cell(row=2, column=STAGE_FIRST_COL).coordinate
 
 
-def _write_sum_data_header_rows(
-    ws: Worksheet,
-    leading_labels: list[str],
-    trailing_labels: list[str],
-    stage_names: dict[int, Any],
-    header_statuses: dict[int, str | None],
-    stage_count: int,
-) -> None:
-    """Sum Data's two-row stacked header -- stage name on row 1, "Stage
-    N" on row 2, matching the real template (see
-    tests/fixtures/sample_increment.xlsm's own Sum Data sheet, which
-    stacks stage name/number on separate rows the same way -- this
-    doesn't replicate its third row of bare stage numbers, just the two
-    rows this session's feature actually asked for).
-
-    Every OTHER column (leading_labels/trailing_labels -- Inc #/
-    Index/.../% Complete) has one logical header, not two, so its cell
-    is written once on row 1 and merged down through row 2 rather than
-    repeating the same label on both rows.
-
-    header_statuses colors each stage's two header cells together (see
-    core.excel_reader.stage_header_status) -- red if any item requiring
-    that stage is still Open, green only if every item requiring it is
-    Done, left uncolored (but still bordered/bold) if nothing requires
-    it at all. Recomputed by the caller from the SAME live rows on
-    every export -- never cached -- so this can never show a stale
-    color relative to what's actually in the sheet below it.
-    """
-    row1 = list(leading_labels)
-    row2 = [""] * len(leading_labels)
-    for i in range(1, stage_count + 1):
-        row1.append(stage_names.get(i) or "")
-        row2.append(f"Stage {i}")
-    row1 += trailing_labels
-    row2 += [""] * len(trailing_labels)
-
-    ws.append(row1)
-    ws.append(row2)
-    total_cols = len(row1)
-
-    for row in (1, 2):
-        for col in range(1, total_cols + 1):
-            cell = ws.cell(row=row, column=col)
-            cell.font = _HEADER_FONT
-            cell.border = _SUM_DATA_HEADER_BORDER
-            cell.alignment = _STAGE_ALIGNMENT
-
-    stage_first_col = len(leading_labels) + 1
-    stage_last_col = stage_first_col + stage_count - 1
-    for col in list(range(1, stage_first_col)) + list(range(stage_last_col + 1, total_cols + 1)):
-        ws.merge_cells(start_row=1, start_column=col, end_row=2, end_column=col)
-
-    for stage in range(1, stage_count + 1):
-        status = header_statuses.get(stage)
-        if status is None:
-            continue
-        col = stage_first_col + stage - 1
-        for row in (1, 2):
-            cell = ws.cell(row=row, column=col)
-            cell.fill = _SUM_DATA_STAGE_FILLS[status]
-            cell.font = _SUM_DATA_STAGE_HEADER_FONTS[status]
+SUM_DATA_HEADERS = [
+    "Project #", "Inc #", "Index", "Description", "Approval Agency",
+    "Stage #", "Status", "Notes", "Completion Date", "Open", "Done", "Total", "% Complete",
+]
 
 
 def _write_sum_data_sheet(
     ws: Worksheet,
     rows: list[dict[str, Any]],
     increment_name: str,
-    stage_names: dict[int, Any],
+    project_number: Any,
     stage_count: int,
 ) -> None:
-    """Mirrors ui.pages.data_view_page's Sum Data tab exactly: live
-    status.json-backed Done/Open per required stage (an unset required
-    stage defaults to "Open" -- see that module's docstring), plus live
-    Open/Done/Total/% Complete columns, rather than build_sum_data()'s
-    own raw-file-derived status text.
-
-    Uses its own SUM_DATA_* column constants (one wider than All
-    Data's, for the leading Inc # column -- see module-level comment)
-    rather than the shared _set_common_column_widths/STAGE_FIRST_COL
-    All Data's sheet uses.
+    """Mirrors ui.pages.data_view_page's Sum Data tab exactly: one row
+    per (Index, Stage) actually required for that item (see
+    core.excel_reader.expand_sum_data_rows -- an F-Cons Verif/milestone
+    item with no numbered stages gets exactly one row instead, Stage #
+    "VCR"), each with its live status.json-backed Done/Open status (an
+    unset required stage defaults to "Open" -- see that module's
+    docstring), plus one bottom Open/Done/Total/% Complete summary row --
+    NOT build_sum_data()'s own raw-file-derived status text.
     """
-    _write_sum_data_header_rows(
-        ws,
-        ["Inc #", "Index", "Description", "Approval Agency"],
-        ["VCR", "Open", "Done", "Total", "% Complete"],
-        stage_names,
-        stage_header_status(rows, stage_count),
-        stage_count,
-    )
+    _write_header(ws, SUM_DATA_HEADERS)
 
-    for row_data in rows:
-        required = row_data.get("required_stages", [])
-        stage_status = row_data.get("stage_status", {})
-        live_status = {stage: stage_status.get(stage, "Open") for stage in required}
-        done_count = sum(1 for status in live_status.values() if status == "Done")
-        open_count = sum(1 for status in live_status.values() if status == "Open")
-
-        # VCR (already "Done"/"Open"/None -- see
-        # ui.mock_data._sum_data_rows) contributes to Open/Done/Total
-        # the same way a required stage does -- F-Cons Verif items
-        # (required_stages always empty for them) track completion via
-        # this one field instead of the 42-stage grid, so without this
-        # they'd always show Total 0 despite having a real VCR status.
-        vcr_status = row_data.get("vcr")
-        if vcr_status == "Done":
-            done_count += 1
-        elif vcr_status == "Open":
-            open_count += 1
-        total_count = done_count + open_count
-        pct = (done_count / total_count) if total_count else None
-
-        values = [
-            increment_name,
-            row_data.get("index"),
-            row_data.get("description") or "",
-            row_data.get("approval_agency") or "",
-        ]
-        values += ["" for _ in range(1, stage_count + 1)]  # written properly below via _write_sum_data_stage_cell
-        values.append(vcr_status)
-        values.append(open_count)
-        values.append(done_count)
-        values.append(total_count)
-        values.append(pct)
-        ws.append(values)
-
+    for entry in expand_sum_data_rows(rows):
+        ws.append(
+            [
+                project_number,
+                increment_name,
+                entry["index"],
+                entry["description"] or "",
+                entry["approval_agency"] or "",
+                entry["stage"],
+                "",  # written properly below via _write_sum_data_status_cell
+                "",  # Notes -- always blank this pass, see SUM_DATA_NOTES_COL
+                "",  # Completion Date -- always blank this pass
+                "",
+                "",
+                "",
+                "",
+            ]
+        )
         excel_row = ws.max_row
         _apply_description_wrap(ws, excel_row, column=SUM_DATA_DESCRIPTION_COL)
-        for stage, status in live_status.items():
-            _write_sum_data_stage_cell(ws, excel_row, stage, status)
-        sum_data_stage_last_col = SUM_DATA_STAGE_FIRST_COL + stage_count - 1
-        if vcr_status in ("Done", "Open"):
-            vcr_col = sum_data_stage_last_col + 1
-            cell = ws.cell(row=excel_row, column=vcr_col)
-            cell.fill = _SUM_DATA_STAGE_FILLS[vcr_status]
-            cell.font = _SUM_DATA_STAGE_FONTS[vcr_status]
-            cell.alignment = _STAGE_ALIGNMENT
+        _write_sum_data_status_cell(ws, excel_row, entry["status"])
 
-        pct_col = sum_data_stage_last_col + 5
-        if pct is not None:
-            ws.cell(row=excel_row, column=pct_col).number_format = "0%"
-
-    sum_data_stage_last_col = SUM_DATA_STAGE_FIRST_COL + stage_count - 1
-    vcr_col = sum_data_stage_last_col + 1
-    open_col = vcr_col + 1
-    done_col = vcr_col + 2
-    total_col = vcr_col + 3
-    pct_col = vcr_col + 4
+    # The Totals row is always the single LAST row here (never
+    # interspersed with real data rows the way the combined export's
+    # per-increment Subtotal rows are -- see _write_combined_sum_data_
+    # sheet's own AutoFilter note), so the AutoFilter range below can
+    # simply stop one row short of it -- no need for SUBTOTAL() formulas
+    # to keep it filter-safe; a narrower range already guarantees it.
+    last_data_row = ws.max_row
 
     # Live totals -- recomputed from these SAME rows every export (see
     # core.excel_reader.live_sum_data_totals), never cached, so this
     # never goes stale relative to the individual rows just written above.
     totals = live_sum_data_totals(rows, stage_count)
-    totals_values = ["Totals", "", "", ""]
-    for stage in range(1, stage_count + 1):
-        totals_values.append(totals["stage_open_counts"][stage])
-    totals_values.append(totals["vcr_open_count"])
-    totals_values.append(totals["open_total"])
-    totals_values.append(totals["done_total"])
-    totals_values.append(totals["grand_total"])
-    totals_values.append(totals["pct_complete"])
-    _write_totals_row(ws, totals_values)
+    _write_totals_row(
+        ws,
+        [
+            "", "Totals", "", "", "", "", "", "", "",
+            totals["open_total"], totals["done_total"], totals["grand_total"], totals["pct_complete"],
+        ],
+    )
     if totals["pct_complete"] is not None:
-        ws.cell(row=ws.max_row, column=pct_col).number_format = "0%"
+        ws.cell(row=ws.max_row, column=SUM_DATA_PCT_COL).number_format = "0%"
 
+    # AutoFilter (real Excel column filter dropdowns, client's own
+    # reference-sheet style) over the header + real data rows ONLY --
+    # deliberately excludes the Totals row (row last_data_row + 1) so a
+    # Status/Stage filter can never hide it or evaluate its blank cells
+    # against the filter criteria. Covers every column (A through
+    # SUM_DATA_PCT_COL), not just the ones the in-app filter bar offers
+    # dropdowns for, since Excel's own AutoFilter arrows are cheap to
+    # leave available on every column and there's no reason to withhold
+    # Description/Notes/Completion Date/Open/Done/Total/% Complete from
+    # a user who wants to filter or sort by one of those instead.
+    ws.auto_filter.ref = f"A1:{get_column_letter(SUM_DATA_PCT_COL)}{last_data_row}"
+
+    ws.column_dimensions[get_column_letter(SUM_DATA_PROJECT_COL)].width = 18
     ws.column_dimensions[get_column_letter(SUM_DATA_INCREMENT_COL)].width = 40
     ws.column_dimensions[get_column_letter(SUM_DATA_INDEX_COL)].width = 12
     ws.column_dimensions[get_column_letter(SUM_DATA_DESCRIPTION_COL)].width = 45
     ws.column_dimensions[get_column_letter(SUM_DATA_AGENCY_COL)].width = 20
-    for col in range(SUM_DATA_STAGE_FIRST_COL, sum_data_stage_last_col + 1):
-        ws.column_dimensions[get_column_letter(col)].width = 9
-    for col, width in {vcr_col: 9, open_col: 9, done_col: 9, total_col: 9, pct_col: 12}.items():
-        ws.column_dimensions[get_column_letter(col)].width = width
-    # row=3, not 2 -- freezes BOTH header rows (see _write_sum_data_header_rows).
-    ws.freeze_panes = ws.cell(row=3, column=SUM_DATA_STAGE_FIRST_COL).coordinate
+    ws.column_dimensions[get_column_letter(SUM_DATA_STAGE_COL)].width = 10
+    ws.column_dimensions[get_column_letter(SUM_DATA_STATUS_COL)].width = 10
+    ws.column_dimensions[get_column_letter(SUM_DATA_NOTES_COL)].width = 30
+    ws.column_dimensions[get_column_letter(SUM_DATA_COMPLETION_DATE_COL)].width = 16
+    ws.column_dimensions[get_column_letter(SUM_DATA_OPEN_COL)].width = 9
+    ws.column_dimensions[get_column_letter(SUM_DATA_DONE_COL)].width = 9
+    ws.column_dimensions[get_column_letter(SUM_DATA_TOTAL_COL)].width = 9
+    ws.column_dimensions[get_column_letter(SUM_DATA_PCT_COL)].width = 12
+    ws.freeze_panes = ws.cell(row=2, column=SUM_DATA_STAGE_COL).coordinate
 
 
 REPORT_DESCRIPTION_COL = 3
@@ -726,7 +651,7 @@ def export_increment(increment: Any, path: str) -> None:
         ws_sum_data = wb.active
         ws_sum_data.title = "Sum Data"
     _write_sum_data_sheet(
-        ws_sum_data, increment.sum_data, increment.name, increment.stage_names, increment.stage_count
+        ws_sum_data, increment.sum_data, increment.name, increment.project_number, increment.stage_count
     )
 
     if SHOW_ALL_DATA_AND_REPORT_TABS:

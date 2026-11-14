@@ -37,14 +37,13 @@ dropping them carries no risk of preview/export drift.
 
 from __future__ import annotations
 
-from typing import Any
-
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QStandardItem, QStandardItemModel
+from PySide6.QtGui import QColor, QFont, QIcon, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -58,9 +57,10 @@ from PySide6.QtWidgets import (
 )
 
 from core import combined_export, excel_export
-from core.excel_reader import stage_header_status, sum_data_stage_headers
+from core.excel_reader import derive_short_display_name
 from ui.mock_data import CombinedView, MockDataStore
 from ui.pages.data_view_page import (
+    SUM_DATA_FILTER_COLUMNS,
     _describe_change,
     _first_line,
     _format_changes_date,
@@ -73,9 +73,14 @@ from ui.pages.data_view_page import (
     _totals_item,
 )
 from ui.widgets.frozen_table import FrozenTableView
+from ui.widgets.sum_data_filter_bar import apply_filtering, mark_summary_row
 from ui.workers import run_with_progress
 
 FROZEN_COLUMNS = 4  # Increment, Index, Description, Approval Agency
+# Sum Data's own frozen-column count -- Project #, Increment, Index,
+# Description, Approval Agency (one more than All Data's FROZEN_COLUMNS
+# above, since Sum Data also has Project # -- see _build_sum_data_tab).
+SUM_DATA_FROZEN_COLUMNS = 5
 RECENTLY_ADDED_COLOR = QColor("#eaf7ee")
 
 # Per-increment subtotal row -- bold, like the bottom Grand Total row
@@ -136,7 +141,11 @@ class CombinedDataViewPage(QWidget):
         # them apart.
         self.tabs = QTabWidget()
         self.all_data_table = self._build_all_data_tab()
-        self.sum_data_table = self._build_sum_data_tab()
+        # _build_sum_data_tab() sets self.sum_data_table itself (the
+        # actual FrozenTableView, for existing callers/tests that expect
+        # that attribute to be the table) and returns a WRAPPER widget
+        # (filter bar + status label + table) to add to the tab instead.
+        sum_data_tab_content = self._build_sum_data_tab()
         tabs = self.tabs
         # All Data/Report tabs are hidden (not just built -- both are
         # still built and populated normally above/below either way)
@@ -144,7 +153,7 @@ class CombinedDataViewPage(QWidget):
         # see that constant's docstring.
         if excel_export.SHOW_ALL_DATA_AND_REPORT_TABS:
             tabs.addTab(self.all_data_table, "All Data")
-        tabs.addTab(self.sum_data_table, "Sum Data")
+        tabs.addTab(sum_data_tab_content, "Sum Data")
         report_tab = self._build_report_tab()
         if excel_export.SHOW_ALL_DATA_AND_REPORT_TABS:
             tabs.addTab(report_tab, "Report")
@@ -169,10 +178,28 @@ class CombinedDataViewPage(QWidget):
         title = QLabel(f"Combined View — {count} Increment{'s' if count != 1 else ''}")
         title.setObjectName("pageTitle")
 
-        names = ", ".join(inc.name for inc in self.view.increments)
+        # Short display names, not the full Record Name -- comma-joining
+        # several real HMR/SMR increments' full 300-550+ character names
+        # here would be even worse than the single-increment page's
+        # overflow (see core.excel_reader.derive_short_display_name's
+        # docstring). Identity/matching is untouched; this is display-only.
+        #
+        # Even short names comma-joined can still push this label tall:
+        # confirmed directly (13 real increments -> a 662-character
+        # joined string, word-wrapping to ~164px/10+ lines and shoving
+        # the table down the page). Capped to the first 3 names + a
+        # count of the rest -- the full list (raw, untruncated names)
+        # stays reachable as a tooltip, same as before.
+        short_names = [derive_short_display_name(inc.name) for inc in self.view.increments]
+        if len(short_names) <= 3:
+            names = ", ".join(short_names)
+        else:
+            remaining = len(short_names) - 3
+            names = ", ".join(short_names[:3]) + f", and {remaining} more"
         subtitle = QLabel(f"{self.project_name}  ·  {names}")
         subtitle.setObjectName("hint")
         subtitle.setWordWrap(True)
+        subtitle.setToolTip(", ".join(inc.name for inc in self.view.increments))
 
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
@@ -326,155 +353,180 @@ class CombinedDataViewPage(QWidget):
     # ------------------------------------------------------------------
     # Sum Data tab
     # ------------------------------------------------------------------
-    def _build_sum_data_tab(self) -> FrozenTableView:
-        # Stage names are a template property, not a per-increment one,
-        # so in the common case every selected increment agrees on a
-        # given stage number's name -- but increments can legitimately
-        # have DIFFERENT stage counts now (see self.view.stage_count's
-        # docstring: a real 2-stage increment combined with a 42-stage
-        # one), so a shorter increment's own stage_names dict simply
-        # won't have entries past its own count. Merging across every
-        # selected increment (not just the first) means a stage name
-        # still shows correctly as long as ANY selected increment
-        # defines it, rather than falling back to a bare "Stage N" for
-        # every stage past the FIRST increment's own count.
-        stage_names: dict[int, Any] = {}
-        for inc in self.view.increments:
-            stage_names.update(inc.stage_names)
-        headers = ["Increment", "Index", "Description", "Approval Agency"]
-        headers += sum_data_stage_headers(stage_names, self.view.stage_count)
-        headers += ["VCR", "Open", "Done", "Total", "% Complete"]
+    def _build_sum_data_tab(self) -> QWidget:
+        headers = [
+            "Project #", "Increment", "Index", "Description", "Approval Agency",
+            "Stage #", "Status", "Notes", "Completion Date", "Open", "Done", "Total", "% Complete",
+        ]
 
         rows = self.view.sum_data_rows
         model = QStandardItemModel(len(rows) + 1, len(headers))
         model.setHorizontalHeaderLabels(headers)
-        # See ui.pages.data_view_page's matching comment -- "Piers\nStage
-        # 1" headers are wider than the 56px stage columns.
-        for col_idx, header in enumerate(headers):
-            model.setHeaderData(col_idx, Qt.Horizontal, header, Qt.ToolTipRole)
 
-        # Same header color coding as the single-increment tab (see
-        # ui.pages.data_view_page's matching comment), aggregated across
-        # every selected increment's REAL rows together -- real_rows()
-        # strips this function's own subtotal marker rows out first, so
-        # they can't skew "is any item still Open for this stage" (a
-        # marker row isn't a real item requiring anything). Recomputed
-        # fresh from these same live rows every time this tab is built.
-        header_statuses = stage_header_status(combined_export.real_rows(rows), self.view.stage_count)
-        for stage in range(1, self.view.stage_count + 1):
-            status = header_statuses[stage]
-            if status is None:
-                continue
-            col_idx = FROZEN_COLUMNS + (stage - 1)
-            model.setHeaderData(col_idx, Qt.Horizontal, QBrush(_SUM_DATA_STATUS_FILL[status]), Qt.BackgroundRole)
-            model.setHeaderData(col_idx, Qt.Horizontal, QBrush(_SUM_DATA_STATUS_TEXT_COLOR[status]), Qt.ForegroundRole)
+        # Tracks which physical rows belong to the increment currently
+        # being written, reset after each Subtotal row -- rows are
+        # grouped contiguously per increment by construction (see
+        # core.combined_export.build_combined_sum_data_rows), so a
+        # Subtotal row's own scope is exactly "every real row written
+        # since the last one" plus the leading rows of a FIRST increment
+        # with no prior Subtotal to reset against. all_scope_rows
+        # accumulates every real row across every increment, for the
+        # final overall Totals row below.
+        current_increment_scope_rows: list[int] = []
+        all_scope_rows: list[int] = []
 
         for row_idx, row_data in enumerate(rows):
             if row_data["is_subtotal"]:
                 totals = row_data["subtotal_totals"]
+                # Short display name in the Subtotal label itself (see
+                # core.excel_reader.derive_short_display_name), full
+                # name as a tooltip -- a labels-only exception to
+                # preview/export parity, same as the "Increment" column
+                # already is: the EXPORTED Subtotal label (core.
+                # combined_export) stays full text, untouched here.
+                # Confirmed necessary: some real increment names made
+                # this row over a dozen lines tall on screen.
+                short_name = derive_short_display_name(row_data["increment"])
+                subtotal_label_item = _subtotal_item(f"{short_name} — Subtotal")
+                subtotal_label_item.setToolTip(row_data["increment"])
                 items = [
-                    _subtotal_item(f"{row_data['increment']} — Subtotal"),
+                    _subtotal_item(""),
+                    subtotal_label_item,
+                    _subtotal_item(""), _subtotal_item(""), _subtotal_item(""), _subtotal_item(""),
                     _subtotal_item(""), _subtotal_item(""), _subtotal_item(""),
+                    _subtotal_item(str(totals["open_total"])),
+                    _subtotal_item(str(totals["done_total"])),
+                    _subtotal_item(str(totals["grand_total"])),
+                    _subtotal_item(_format_pct(totals["done_total"], totals["grand_total"])),
                 ]
-                for stage in range(1, self.view.stage_count + 1):
-                    items.append(_subtotal_item(str(totals["stage_open_counts"].get(stage, 0))))
-                items.append(_subtotal_item(str(totals["vcr_open_count"])))
-                items.append(_subtotal_item(str(totals["open_total"])))
-                items.append(_subtotal_item(str(totals["done_total"])))
-                items.append(_subtotal_item(str(totals["grand_total"])))
-                items.append(_subtotal_item(_format_pct(totals["done_total"], totals["grand_total"])))
                 for col_idx, item in enumerate(items):
                     model.setItem(row_idx, col_idx, item)
+                mark_summary_row(model, row_idx, scope_rows=current_increment_scope_rows, is_totals=False)
+                current_increment_scope_rows = []
                 continue
 
-            increment_item = QStandardItem(row_data["increment"])
+            project_item = QStandardItem(str(row_data.get("project_number") or ""))
+            # Short display name in the cell itself (see
+            # core.excel_reader.derive_short_display_name), full name as
+            # a tooltip -- same treatment as the single-increment page's
+            # "Increment" column. The Subtotal row's own label (above)
+            # deliberately keeps the FULL name unchanged, matching
+            # core.combined_export's exported subtotal label exactly --
+            # it's one row per project, not repeated on every row, so it
+            # doesn't have this column's repeated-overflow problem.
+            increment_item = QStandardItem(derive_short_display_name(row_data["increment"]))
+            increment_item.setToolTip(row_data["increment"])
             index_item = QStandardItem(str(row_data["index"]))
             description_item = QStandardItem(row_data.get("description") or "")
             description_item.setToolTip(row_data.get("description") or "")
             agency_item = QStandardItem(row_data.get("approval_agency") or "")
+            stage_item = QStandardItem(str(row_data["stage"]))
+            stage_item.setTextAlignment(Qt.AlignCenter)
 
-            items = [increment_item, index_item, description_item, agency_item]
+            status = row_data.get("status")
+            status_item = QStandardItem(status or "")
+            status_item.setTextAlignment(Qt.AlignCenter)
+            if status in _SUM_DATA_STATUS_FILL:
+                status_item.setBackground(_SUM_DATA_STATUS_FILL[status])
+                status_item.setForeground(_SUM_DATA_STATUS_TEXT_COLOR[status])
+                status_item.setToolTip(f"Stage {row_data['stage']} — {status}")
 
-            required = row_data.get("required_stages", [])
-            live_status = row_data["live_status"]  # precomputed by core.combined_export.build_combined_sum_data_rows
-            for stage in range(1, self.view.stage_count + 1):
-                stage_item = QStandardItem("")
-                stage_item.setTextAlignment(Qt.AlignCenter)
-                if stage in required:
-                    status = live_status[stage]
-                    stage_item.setText(status)
-                    stage_item.setBackground(_SUM_DATA_STATUS_FILL[status])
-                    stage_item.setForeground(_SUM_DATA_STATUS_TEXT_COLOR[status])
-                    stage_item.setToolTip(f"Stage {stage} — {status}")
-                items.append(stage_item)
-
-            # "vcr" is already "Done"/"Open"/None here (see
-            # ui.mock_data._sum_data_rows) -- F-Cons Verif items track
-            # completion via this one field instead of the 42-stage
-            # grid, so it gets the same colored-status treatment a
-            # required stage cell gets above.
-            vcr_status = row_data.get("vcr")
-            vcr_item = QStandardItem(vcr_status or "")
-            vcr_item.setTextAlignment(Qt.AlignCenter)
-            if vcr_status in ("Done", "Open"):
-                vcr_item.setBackground(_SUM_DATA_STATUS_FILL[vcr_status])
-                vcr_item.setForeground(_SUM_DATA_STATUS_TEXT_COLOR[vcr_status])
-                vcr_item.setToolTip(f"VCR — {vcr_status}")
-            items.append(vcr_item)
-
-            open_item = QStandardItem(str(row_data["open_count"]))
-            open_item.setTextAlignment(Qt.AlignCenter)
-            items.append(open_item)
-
-            done_item = QStandardItem(str(row_data["done_count"]))
-            done_item.setTextAlignment(Qt.AlignCenter)
-            items.append(done_item)
-
-            total_item = QStandardItem(str(row_data["total_count"]))
-            total_item.setTextAlignment(Qt.AlignCenter)
-            items.append(total_item)
-
-            pct_item = QStandardItem(_format_pct(row_data["done_count"], row_data["total_count"]))
-            pct_item.setTextAlignment(Qt.AlignCenter)
-            items.append(pct_item)
+            # Notes/Completion Date -- always blank, same as the export (no
+            # underlying app data yet; purely manually-fillable columns for
+            # the client -- see core.excel_export.SUM_DATA_NOTES_COL).
+            items = [
+                project_item, increment_item, index_item, description_item, agency_item, stage_item, status_item,
+            ]
+            items += [QStandardItem(""), QStandardItem("")]  # Notes, Completion Date
+            items += [QStandardItem(""), QStandardItem(""), QStandardItem(""), QStandardItem("")]
+            for item in items[9:]:
+                item.setTextAlignment(Qt.AlignCenter)
 
             for item in items:
                 item.setEditable(False)
             for col_idx, item in enumerate(items):
                 model.setItem(row_idx, col_idx, item)
+            current_increment_scope_rows.append(row_idx)
+            all_scope_rows.append(row_idx)
 
         totals = self.view.sum_data_totals
-        totals_items = [_totals_item("Totals"), _totals_item(""), _totals_item(""), _totals_item("")]
-        for stage in range(1, self.view.stage_count + 1):
-            totals_items.append(_totals_item(str(totals["stage_open_counts"][stage])))
-        totals_items.append(_totals_item(str(totals["vcr_open_count"])))
-        totals_items.append(_totals_item(str(totals["open_total"])))
-        totals_items.append(_totals_item(str(totals["done_total"])))
-        totals_items.append(_totals_item(str(totals["grand_total"])))
-        totals_items.append(_totals_item(_format_pct(totals["done_total"], totals["grand_total"])))
+        totals_items = [
+            _totals_item(""), _totals_item("Totals"), _totals_item(""), _totals_item(""), _totals_item(""),
+            _totals_item(""), _totals_item(""), _totals_item(""), _totals_item(""),
+            _totals_item(str(totals["open_total"])),
+            _totals_item(str(totals["done_total"])),
+            _totals_item(str(totals["grand_total"])),
+            _totals_item(_format_pct(totals["done_total"], totals["grand_total"])),
+        ]
         for col_idx, item in enumerate(totals_items):
             model.setItem(len(rows), col_idx, item)
+        mark_summary_row(model, len(rows), scope_rows=all_scope_rows, is_totals=True)
 
-        table = FrozenTableView(frozen_columns=FROZEN_COLUMNS)
+        table = FrozenTableView(frozen_columns=SUM_DATA_FROZEN_COLUMNS)
         table.setModel(model)
         table.setAlternatingRowColors(True)
         table.setWordWrap(True)
         table.verticalHeader().hide()
-        table.setColumnWidth(0, 220)
-        table.setColumnWidth(1, 90)
-        table.setColumnWidth(2, 320)
-        table.setColumnWidth(3, 140)
-        for col in range(FROZEN_COLUMNS, FROZEN_COLUMNS + self.view.stage_count):
-            table.setColumnWidth(col, 56)
-        vcr_col = FROZEN_COLUMNS + self.view.stage_count
-        table.setColumnWidth(vcr_col, 56)
-        table.setColumnWidth(vcr_col + 1, 56)
-        table.setColumnWidth(vcr_col + 2, 56)
-        table.setColumnWidth(vcr_col + 3, 56)
-        table.setColumnWidth(vcr_col + 4, 80)
+        table.setColumnWidth(0, 120)
+        table.setColumnWidth(1, 220)
+        table.setColumnWidth(2, 90)
+        table.setColumnWidth(3, 320)
+        table.setColumnWidth(4, 140)
+        table.setColumnWidth(5, 70)  # Stage #
+        table.setColumnWidth(6, 80)  # Status
+        table.setColumnWidth(7, 200)  # Notes
+        # 160, not 110: the header's real rendered width (bold,
+        # QHeaderView::section's own 6px-per-side padding from
+        # ui/style.qss) is wider than its plain text alone -- 110 was
+        # measured against an unstyled default font/no padding and
+        # clipped "Completion Date" to "ompletion Date" on screen.
+        table.setColumnWidth(8, 160)  # Completion Date
+        table.setColumnWidth(9, 56)  # Open
+        table.setColumnWidth(10, 56)  # Done
+        table.setColumnWidth(11, 56)  # Total
+        # 100, not 80: QHeaderView.sectionSizeHint() -- Qt's own
+        # authoritative size for this header, accounting for the real
+        # loaded stylesheet/padding, not a guessed value -- reports 94
+        # as the real minimum; 80 clipped "% Complete" at the right
+        # edge. See tests/test_sum_data_column_widths.py, which checks
+        # every column against this same API so a future header
+        # relabel/font change can't silently reintroduce this.
+        table.setColumnWidth(12, 100)  # % Complete
         table.horizontalHeader().setMinimumSectionSize(40)
+        # Notes (not a frozen column, and the one column where extra
+        # width is actually useful -- free text the client types into)
+        # absorbs any leftover horizontal space instead of it showing as
+        # blank, un-styled viewport background past the last column
+        # ("% Complete") -- confirmed that's genuinely unclaimed space,
+        # not a phantom column (model.columnCount() matches len(headers)
+        # exactly). Every other column stays Interactive (Qt's default):
+        # user-resizable, but not automatically stretched.
+        table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Stretch)
         table.resizeRowsToContents()
-        return table
+
+        self.sum_data_table = table
+        status_label = QLabel()
+        status_label.setObjectName("hint")
+        filter_bar, self._sum_data_filter_proxy = apply_filtering(
+            table, model, SUM_DATA_FILTER_COLUMNS, status_label, _format_pct
+        )
+        self.sum_data_filter_bar = filter_bar
+
+        totals_caption = QLabel(
+            "Totals and per-increment Subtotal rows recalculate from visible rows when a filter is active; "
+            "a Subtotal row is hidden if none of its own rows match."
+        )
+        totals_caption.setObjectName("hint")
+
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(4)
+        container_layout.addWidget(filter_bar)
+        container_layout.addWidget(status_label)
+        container_layout.addWidget(totals_caption)
+        container_layout.addWidget(table, stretch=1)
+        return container
 
     # ------------------------------------------------------------------
     # Report tab

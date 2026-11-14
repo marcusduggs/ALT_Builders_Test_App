@@ -86,6 +86,7 @@ slugs exist, this is purely an internal consequence of the rename.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -175,6 +176,45 @@ class VersionRecord:
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
     return slug or "untitled"
+
+
+# Increment directory names are derived from core.excel_reader.get_record_name()'s
+# FULL free-text Record Name -- for most real files a short title, but
+# for some (see tests/fixtures/hmr_smr_projects -- real HMR/SMR TIO
+# files) the entire "Scope of Project" paragraph, 300-550+ characters.
+# A raw _slugify() of that text alone can exceed the OS's 255-byte
+# single-path-component limit and crash create_increment() with
+# OSError: File name too long (reproduced on 5 of 13 real fixture
+# files). Capped here, with headroom left for _unique_slug()'s own
+# "-2"/"-3" collision suffix -- this is an ON-DISK STORAGE concern only:
+# core.increment_matcher's identity matching still compares the FULL,
+# untruncated Record Name text, exactly as before. NOT applied to
+# create_project()'s own _slugify() call -- project names are short,
+# user-typed text, not derived from a long file-sourced paragraph, so
+# they were never at risk of this.
+_MAX_INCREMENT_SLUG_LENGTH = 100
+
+
+def _slugify_increment(name: str, project_number: Any = None) -> str:
+    """_slugify(), capped to _MAX_INCREMENT_SLUG_LENGTH for increment
+    directory names specifically -- see that constant's docstring.
+
+    A name short enough to fit is slugified exactly as before (so every
+    existing, already-short increment's directory name is completely
+    unaffected by this change). A name whose slug would exceed the cap
+    is truncated, then disambiguated so two genuinely different long
+    names can never collide on the same truncated prefix and silently
+    share (or overwrite) one folder: the Project # when given (already
+    confirmed short -- e.g. "S221919-38-00" -- and unique per real
+    project), or else a short content hash of the FULL, untruncated
+    name (covers the rare case project_number itself is missing/blank).
+    """
+    base = _slugify(name)
+    if len(base) <= _MAX_INCREMENT_SLUG_LENGTH:
+        return base
+    truncated = base[:_MAX_INCREMENT_SLUG_LENGTH].rstrip("-")
+    disambiguator = _slugify(str(project_number)) if project_number else hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+    return f"{truncated}-{disambiguator}"
 
 
 _INCREMENT_NUMBER_RE = re.compile(r"^\s*INC\s+(\d+)", re.IGNORECASE)
@@ -379,13 +419,21 @@ class ProjectStore:
     def get_increment(self, project_name: str, increment_name: str) -> IncrementRecord | None:
         return next((i for i in self.list_increments(project_name) if i.name == increment_name), None)
 
-    def create_increment(self, project_name: str, increment_name: str, source_file_path: str) -> IncrementRecord:
+    def create_increment(
+        self, project_name: str, increment_name: str, source_file_path: str, project_number: Any = None
+    ) -> IncrementRecord:
         """Creates a brand-new increment and saves source_file_path as its
         version 1, with an empty status.json (nothing has ever been marked
         for any index in a file that didn't exist in this app a moment
         ago). Raises ValueError if the project doesn't exist or an
         increment with this name already exists in it -- callers are
         expected to route that to "Upload New Version" instead.
+
+        project_number (core.excel_reader.parse_project_info()'s
+        "project_number") is optional and ONLY used to disambiguate the
+        on-disk slug if increment_name's own slug is too long to use as-is
+        -- see _slugify_increment(). Passing None here never changes
+        behavior for any increment_name short enough not to need it.
         """
         project = self.get_project(project_name)
         if project is None:
@@ -394,7 +442,7 @@ class ProjectStore:
             raise ValueError(f"Increment {increment_name!r} already exists in project {project_name!r}")
 
         taken = {d.name for d in self._increment_dirs(project.slug)}
-        slug = _unique_slug(_slugify(increment_name), taken)
+        slug = _unique_slug(_slugify_increment(increment_name, project_number), taken)
         today = date.today().isoformat()
 
         _write_json(

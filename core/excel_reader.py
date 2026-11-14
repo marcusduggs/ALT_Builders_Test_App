@@ -338,12 +338,35 @@ GRID_STAGE_FIRST_COL = 5  # E  -> stage 1
 GRID_DESC_COL_OFFSET = 1    # stage_last_col + 1 (AU when 42 stages, G when 2)
 GRID_OPAA_COL_OFFSET = 3    # stage_last_col + 3 (AW when 42 stages, I when 2)
 GRID_AGENCY_COL_OFFSET = 4  # stage_last_col + 4 (AX when 42 stages, J when 2)
+# "HCAI/FDD Use (Initial/Date)" -- the rightmost grid-sheet column, and
+# per a direct client correction, the ACTUAL completion signal for a
+# grid-sheet stage (whether it has anything written in it), not the
+# "Stage N Required" marker itself (which only says a stage applies --
+# see stage_marker_status()'s docstring and raw_status_by_index() below).
+# Offset confirmed cell-for-cell against both a 1-stage and a 3-stage
+# real file's header row, same convention as the offsets above.
+GRID_HCAI_FDD_USE_COL_OFFSET = 6  # stage_last_col + 6 (AZ when 42 stages, K when 2)
 GRID_HEADER_LABEL = "index #"
 
 # The header text each real stage column carries, e.g. "Stage 1
 # Required\n(Select with \"X\")" -- confirmed identical in both the
 # 42-stage and 2-stage real files on hand, just with a different N.
-_STAGE_HEADER_RE = re.compile(r"^\s*Stage\s+(\d+)\s+Required", re.IGNORECASE)
+# Alongside it, an OLDER HCAI template variant confirmed on 2 real files
+# (tests/fixtures/hmr_smr_projects's "SMR 2C"/"SMR 2D") uses a single,
+# un-numbered "REQUIRED (Select with "X")" column instead of "Stage 1
+# Required" -- same "X"/blank marker semantics in the actual cells below
+# it (confirmed directly against both real files), and both files' own
+# A-Project Info "Stage No. -> Stage Name" table (see parse_project_info)
+# is genuinely empty, confirming these are legitimately single-stage
+# projects under the old naming convention, not a different concept that
+# needs separate handling -- just an older header STRING for the exact
+# same column. Matched as an alternative, not a replacement: the new
+# "Stage N Required" form is unchanged and still the only one that can
+# ever match more than once in a row (the legacy form is never numbered,
+# so a file using it always detects as exactly 1 stage).
+_STAGE_HEADER_RE = re.compile(
+    r'^\s*(?:Stage\s+(\d+)\s+Required\b|REQUIRED\s*\(\s*Select\s+with)', re.IGNORECASE
+)
 # A pure runaway-loop guard for detect_stage_count() below, NOT a "real"
 # business limit -- see that function's docstring for why this doesn't
 # assume or cap the actual stage count at 42.
@@ -351,22 +374,32 @@ _STAGE_SCAN_SAFETY_LIMIT = 500
 
 
 def detect_stage_count(ws, header_row: int) -> int:
-    """How many real "Stage N Required" columns this grid sheet
-    actually has, detected by scanning rightward from
-    GRID_STAGE_FIRST_COL in the header row until a column's header
-    text stops matching that pattern (e.g. "TESTS", the Description
-    column that immediately follows the last real stage column -- see
-    module docstring's PARSING STRATEGY section and GRID_DESC_COL_OFFSET
-    above).
+    """How many real "Stage N Required" (or legacy un-numbered
+    "REQUIRED (Select with ...)") columns this grid sheet actually has,
+    detected by scanning rightward from GRID_STAGE_FIRST_COL in the
+    header row until a column's header text stops matching either
+    pattern (e.g. "TESTS", the Description column that immediately
+    follows the last real stage column -- see module docstring's
+    PARSING STRATEGY section and GRID_DESC_COL_OFFSET above).
 
     Deliberately NOT hardcoded to 42 anywhere, and deliberately doesn't
-    cap at 42 either -- confirmed against two real files, one with 42
-    stage columns and one with exactly 2 (a legitimately narrower-scope
-    increment, not a malformed file -- see git history). Whatever
-    number of consecutive matching headers is actually found is the
-    real count for THIS file. _STAGE_SCAN_SAFETY_LIMIT only exists to
-    guarantee this terminates even against a pathological/corrupted
-    sheet; no real template should ever come close to it.
+    cap at 42 either -- confirmed against real files ranging from 1 to
+    42 stage columns (legitimately narrower-scope increments, not
+    malformed files -- see git history). Whatever number of consecutive
+    matching headers is actually found is the real count for THIS file.
+    _STAGE_SCAN_SAFETY_LIMIT only exists to guarantee this terminates
+    even against a pathological/corrupted sheet; no real template
+    should ever come close to it.
+
+    Raises ValueError if NEITHER header form matches even once -- every
+    real B-Tests/C-On-Site/D-Off-Site sheet this app handles has at
+    least one such column (that's the whole point of these sheets), so
+    zero matches means this file's template genuinely isn't one of the
+    two recognized forms, not "zero stages required." A silent 0 here
+    used to make every real required-stage marker in the sheet vanish
+    from All Data/Sum Data with no error at all (confirmed: 296 real
+    test/inspection items disappeared this way from a real file, see
+    tests/test_detect_stage_count.py) -- this must fail loudly instead.
     """
     count = 0
     col = GRID_STAGE_FIRST_COL
@@ -376,6 +409,12 @@ def detect_stage_count(ws, header_row: int) -> int:
             break
         count += 1
         col += 1
+    if count == 0:
+        raise ValueError(
+            f"Could not recognize any 'Stage N Required' (or legacy 'REQUIRED (Select with...)') header "
+            f"column in {ws.title!r} starting at column {GRID_STAGE_FIRST_COL} of header row {header_row} -- "
+            f"this file may use an unrecognized template format."
+        )
     return count
 
 # --- F-Cons Verif (milestone sheet) column layout ---
@@ -431,6 +470,12 @@ class BlueSheetRecord:
     # docstring for why this is scoped the same way required_stages_by_index()
     # scopes VCR out: a deliberate carry-over of that same boundary).
     stage_fill_status: dict[int, str] = field(default_factory=dict)
+    # Raw "HCAI/FDD Use (Initial/Date)" cell value -- only populated for
+    # grid-sheet records (see GRID_HCAI_FDD_USE_COL_OFFSET), same scope
+    # boundary as stage_fill_status above. Whether this is filled in, NOT
+    # the "Stage N Required" marker, is the real completion signal for a
+    # grid-sheet stage -- see raw_status_by_index().
+    hcai_fdd_use: Any = None
 
     @property
     def sum_value(self) -> float:
@@ -537,6 +582,7 @@ def parse_grid_sheet(ws) -> tuple[list[BlueSheetRecord], int]:
     desc_col = stage_last_col + GRID_DESC_COL_OFFSET
     opaa_col = stage_last_col + GRID_OPAA_COL_OFFSET
     agency_col = stage_last_col + GRID_AGENCY_COL_OFFSET
+    hcai_fdd_use_col = stage_last_col + GRID_HCAI_FDD_USE_COL_OFFSET
 
     records = []
     for r in range(header_row + 1, ws.max_row + 1):
@@ -561,6 +607,7 @@ def parse_grid_sheet(ws) -> tuple[list[BlueSheetRecord], int]:
                 opaa_info=_blank_to_none(ws.cell(row=r, column=opaa_col).value),
                 stage_values=stage_values,
                 stage_fill_status=stage_fill_status,
+                hcai_fdd_use=_blank_to_none(ws.cell(row=r, column=hcai_fdd_use_col).value),
             )
         )
     return records, stage_count
@@ -657,85 +704,6 @@ def parse_project_info(ws) -> dict[str, Any]:
     }
 
 
-def sum_data_stage_headers(stage_names: dict[int, Any], stage_count: int) -> list[str]:
-    """Sum Data's own stage column headers -- two stacked lines, the real
-    Stage No. -> Stage Name lookup above (cached per-increment on
-    ui.mock_data.Increment.stage_names) on top and "Stage N" below it,
-    joined with an embedded "\\n" -- e.g. "Piers\\nStage 1". Qt's
-    QHeaderView renders an embedded newline as two genuine stacked lines
-    (confirmed empirically -- not something that needs a second header
-    row in the table widgets, unlike the exported .xlsx, which uses two
-    real rows instead; see core.excel_export._write_sum_data_sheet).
-    Keeps the "Stage N" line rather than the bare name alone so a Sum
-    Data header still cross-references All Data's plain "Stage N"
-    columns (deliberately UNCHANGED -- this is Sum-Data-only scope) and
-    any "Stage N" text elsewhere in the app (tooltips, etc).
-
-    stage_count is the caller's context (a single increment's own
-    increment.stage_count, or the UNION max across every selected
-    increment for the combined case -- see core.combined_export), NOT
-    assumed to be 42 -- confirmed against a real file with only 2 real
-    stage columns.
-
-    Falls back to the bare "Stage N" (one line, no name line at all) for
-    any stage number missing a name -- shouldn't happen in practice
-    (every real template fills in every one of its real stage numbers,
-    including a literal "Not Used" for retired ones), but a missing
-    entry should degrade gracefully, not raise.
-    """
-    headers = []
-    for i in range(1, stage_count + 1):
-        name = stage_names.get(i)
-        headers.append(f"{name}\nStage {i}" if name else f"Stage {i}")
-    return headers
-
-
-def stage_header_status(rows: list[dict], stage_count: int) -> dict[int, str | None]:
-    """Aggregate Done/Open status per stage, across EVERY row where that
-    stage is required -- for Sum Data's stage column HEADERS (this
-    session's color-coding feature), not any individual row's own cell
-    (see _SUM_DATA_STAGE_FILLS-style per-row coloring elsewhere).
-
-    "Open" if ANY row that requires this stage currently has it Open
-    (an unset required stage defaults to Open, same convention
-    live_sum_data_totals() and every other live Sum Data view already
-    uses); "Done" only if EVERY row that requires this stage has it
-    Done; None if no row requires this stage at all -- nothing to
-    aggregate, so the header should read as neutral, not colored either
-    way.
-
-    `rows` is the SAME live row list (ui.mock_data.Increment.sum_data,
-    or its combined-view flattened equivalent via
-    core.combined_export.real_rows()) every other live Sum Data
-    aggregate (live_sum_data_totals, the per-row Open/Done/Total
-    columns) already reads status.json state from -- so this is always
-    exactly as current as everything else on screen, never a separate,
-    independently-stale computation. Single pass over `rows` (each
-    row's own required_stages list, not all 42 stages) -- the same
-    order of work live_sum_data_totals() already does every time Sum
-    Data renders, not a new meaningfully-heavier cost.
-    """
-    any_required = {stage: False for stage in range(1, stage_count + 1)}
-    any_open = {stage: False for stage in range(1, stage_count + 1)}
-    for row in rows:
-        required = row.get("required_stages", [])
-        stage_status = row.get("stage_status", {})
-        for stage in required:
-            any_required[stage] = True
-            if stage_status.get(stage, "Open") != "Done":
-                any_open[stage] = True
-
-    result: dict[int, str | None] = {}
-    for stage in range(1, stage_count + 1):
-        if not any_required[stage]:
-            result[stage] = None
-        elif any_open[stage]:
-            result[stage] = "Open"
-        else:
-            result[stage] = "Done"
-    return result
-
-
 def _find_record_name_label_cell(ws):
     for row in RECORD_NAME_SEARCH_ROWS:
         for col in RECORD_NAME_SEARCH_COLS:
@@ -788,6 +756,79 @@ def get_record_name(path: Any) -> str:
         f"Found the 'Record Name (Scope of Project)' label in {PROJECT_INFO_SHEET!r} of {path!r}, "
         "but no value next to it"
     )
+
+
+# derive_short_display_name()'s own tuning constants -- see that
+# function's docstring for what each one controls. Derived empirically
+# against all 13 real HMR/SMR fixture files (tests/fixtures/hmr_smr_projects)
+# plus every existing (non-HMR/SMR) fixture, not guessed: 9 of the 13
+# real files are already at or under 93 characters and pass through
+# unchanged; the 4 genuinely long ones (313-556 characters) are where
+# these thresholds actually matter.
+_SHORT_NAME_DISPLAY_LIMIT = 100  # at/under this length, the full text is shown as-is -- no shortening needed
+_SHORT_NAME_SEGMENT_CAP = 60  # max length of the accumulated "{Facility} - {Label}"-style prefix
+_SHORT_NAME_MIN_SPLIT_LENGTH = 15  # a split result shorter than this is just a bare facility name, not a usable label
+_SHORT_NAME_TRUNCATE_LENGTH = 80  # fallback hard-truncation length when no reliable split exists
+
+
+def derive_short_display_name(record_name: str) -> str:
+    """A short, display-only label derived from get_record_name()'s full
+    text -- NEVER used for identity/matching (core.increment_matcher
+    keeps comparing the full, untruncated text exactly as before; this
+    exists purely so the page header/title bar and the increment-name
+    table column don't overflow for real files whose Record Name is an
+    entire paragraph, not a short title -- confirmed up to 556
+    characters in real client files, see
+    tests/fixtures/hmr_smr_projects).
+
+    Three cases, in order:
+
+    1. Already short enough (<= _SHORT_NAME_DISPLAY_LIMIT): returned
+       unchanged. Most real files (9 of 13 real HMR/SMR fixtures, and
+       every existing non-HMR/SMR fixture) fall here -- there's no
+       overflow problem to fix, so nothing is shortened or lost.
+
+    2. Long, but splits cleanly on " - ": real long Record Names follow
+       "{Facility} {HMR/SMR label} - {scope detail...}" (facility and
+       label joined by a space, not a dash -- e.g. "UCSF NHPH Hospital
+       Make Ready 9B - Long Hospital Shear Wall Penetrations..."), so
+       accumulating segments split on " - " up to _SHORT_NAME_SEGMENT_CAP
+       isolates exactly "{Facility} {Label}" (confirmed against 3 of
+       the 13 real files this way, each landing at 32-34 characters).
+       A result shorter than _SHORT_NAME_MIN_SPLIT_LENGTH is rejected
+       here too -- see case 3's docstring for why.
+
+    3. No reliable split (FALLBACK -- hard truncation): a different
+       real file ("UCSF NHPH - Site Make Ready 2D Part of the site make
+       ready projects...") has only ONE " - ", between the facility and
+       the label, with NO separator at all before the description runs
+       straight into it ("...Site Make Ready 2D Part of the site..." --
+       no comma, colon, or second dash to find the label/description
+       boundary). Splitting on " - " there yields just "UCSF NHPH" (9
+       characters) -- a bare facility name, not a usable label -- so
+       this case is deliberately rejected (_SHORT_NAME_MIN_SPLIT_LENGTH)
+       rather than returned as a misleadingly-short "short name". No
+       single splitting rule covers this file; it falls back to a
+       plain hard truncation (at a word boundary) with an ellipsis
+       instead of forcing a bad fit.
+    """
+    text = (record_name or "").strip()
+    if len(text) <= _SHORT_NAME_DISPLAY_LIMIT:
+        return text
+
+    segments = text.split(" - ")
+    if len(segments) > 1:
+        accumulated = segments[0]
+        for segment in segments[1:]:
+            candidate = f"{accumulated} - {segment}"
+            if len(candidate) > _SHORT_NAME_SEGMENT_CAP:
+                break
+            accumulated = candidate
+        if len(accumulated) >= _SHORT_NAME_MIN_SPLIT_LENGTH:
+            return accumulated
+
+    truncated = text[:_SHORT_NAME_TRUNCATE_LENGTH].rsplit(" ", 1)[0]
+    return f"{truncated}…"
 
 
 def open_workbook(path_or_workbook: Any) -> openpyxl.Workbook:
@@ -961,6 +1002,17 @@ def vcr_marker_status(value: Any) -> Any:
     return "Open" if status is None else status
 
 
+def is_blank_description(value: Any) -> bool:
+    """True for a record with no description/milestone text at all --
+    None or an empty/whitespace-only string. Shared by build_sum_data()
+    (which excludes such records from Sum Data entirely) and
+    ui.mock_data._sum_data_rows() (which must skip the same records
+    while walking All Data rows, so it doesn't land on one build_sum_data
+    already excluded -- see that function's docstring).
+    """
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
 def build_sum_data(records: list[BlueSheetRecord], inc_label: Any, stage_count: int) -> pd.DataFrame:
     """Reconstructs Sum Data: a filtered, status-transformed view of the
     same records used for All Data. Filter rule and status transform are
@@ -976,9 +1028,25 @@ def build_sum_data(records: list[BlueSheetRecord], inc_label: Any, stage_count: 
     whose required stages are ALL "X"/Done had sum_value == 0 and was
     silently excluded outright -- and a blank Approval Agency excluded an
     item regardless of having real required stages (e.g. C-F4).
+
+    A record with NO description at all (not just a missing status) is
+    excluded unconditionally, before any other rule -- confirmed on a
+    real HMR/SMR file (SMR 4C, F-Cons Verif row 12: Reference Number 3,
+    every other cell including Description and VCR genuinely blank) that
+    this is an unfilled leftover template row, not a real tracked
+    compliance item, and should never contribute a row or a phantom
+    "Open" count. Distinct from vcr_marker_status()'s blank-VCR-defaults-
+    to-Open rule: that rule is for a real item (has a description) with
+    no status yet; this rule is for a row with no item at all. Currently
+    only ever seen on F-Cons Verif rows in practice (grid-sheet rows with
+    a real required stage always have a real description in every file
+    checked), but the check is unconditional -- not is_milestone-scoped
+    -- so it would also catch a genuinely blank grid row if one existed.
     """
     rows = []
     for rec in records:
+        if is_blank_description(rec.description):
+            continue
         is_milestone = rec.source_sheet == MILESTONE_SHEET
         if not is_milestone:
             has_required_stage = any(v not in (0, None, "") for v in rec.stage_values.values())
@@ -1232,6 +1300,49 @@ def live_sum_data_totals(rows: list[dict], stage_count: int) -> dict[str, Any]:
     }
 
 
+def expand_sum_data_rows(rows: list[dict]) -> list[dict]:
+    """Flattens Sum Data's per-item rows (shape: index, description,
+    approval_agency, required_stages, stage_status, vcr -- see
+    ui.mock_data._sum_data_rows) into one row per (Index, Stage) actually
+    required for that item -- the single shared expansion used by both
+    on-screen tables (ui/pages/data_view_page.py,
+    ui/pages/combined_data_view_page.py) and both Excel writers
+    (core/excel_export.py, core/combined_export.py), so none of them can
+    ever disagree about which (Index, Stage) rows exist or what order
+    they're in.
+
+    An item with required stages gets one row per stage, in ascending
+    order, each with its live Done/Open status (stage_status.get(stage,
+    "Open") -- an unset required stage defaults to Open, same convention
+    as everywhere else in this app). An item with NO required stages
+    (always an F-Cons Verif/milestone item -- see
+    required_stages_by_index()'s docstring) gets exactly one row instead,
+    with the literal string "VCR" as its stage and its VCR status as the
+    row's status -- so every item is represented by at least one row,
+    and every row has the same shape (index, description,
+    approval_agency, stage, status).
+
+    Does NOT compute Open/Done/Total aggregates -- see
+    live_sum_data_totals() for that, which still operates on the
+    original (unexpanded) `rows` list.
+    """
+    expanded: list[dict] = []
+    for row in rows:
+        base = {
+            "index": row["index"],
+            "description": row["description"],
+            "approval_agency": row["approval_agency"],
+        }
+        required = row.get("required_stages", [])
+        if required:
+            stage_status = row.get("stage_status", {})
+            for stage in sorted(required):
+                expanded.append({**base, "stage": stage, "status": stage_status.get(stage, "Open")})
+        else:
+            expanded.append({**base, "stage": "VCR", "status": stage_marker_status(row.get("vcr"))})
+    return expanded
+
+
 def required_stages_by_index(all_data: pd.DataFrame) -> dict[str, list[int]]:
     """Which of the real numbered stages are actually required for each
     named Index in an All Data DataFrame -- i.e. have a real marker
@@ -1297,33 +1408,51 @@ def fill_status_by_index(records: list[BlueSheetRecord]) -> dict[str, dict[int, 
 
 
 def raw_status_by_index(records: list[BlueSheetRecord]) -> dict[str, dict[int, str]]:
-    """Rey's team's Done/Open status, by Index, derived directly from
-    each stage cell's raw marker ("X"/"x" -> Done, 1 -> Open) -- the same
-    per-cell transform Sum Data itself uses (stage_marker_status()), just
-    computed across every grid-sheet row instead of Sum Data's filtered subset.
+    """Rey's team's Done/Open status, by Index, for every grid-sheet stage
+    that's actually required -- computed across every grid-sheet row,
+    not just Sum Data's filtered subset.
 
-    Trusting the raw marker this directly is a deliberate choice, made
-    with the "SUM DATA IS STALE..." caution above already on the table:
-    that finding showed the raw marker can, in principle, disagree with
-    Rey's team's actual determination (a stage reopened after being
-    marked, for instance). The choice made anyway was that every
-    required stage should resolve to a real status the moment a file is
-    uploaded, rather than sitting unset -- since a grid-sheet cell is
-    only ever blank, "X", or "1" to begin with, there's no genuine
-    third/unknown state in the source file for the app to preserve by
-    holding off. See core.status_tracker.apply_file_derived_seed, which
-    only uses this as a fallback behind fill_status_by_index -- an
-    explicit color mark from Rey's team still wins if the two disagree.
+    *** CORRECTED per direct client confirmation (previously trusted the
+    wrong column) ***
+    stage_marker_status(value) is used ONLY to decide which stages are
+    real, required ones (a recognized "X"/"1" marker, same definition
+    required_stages_by_index() uses) -- NOT to decide Done vs Open. The
+    "Stage N Required" column only marks that a stage applies to this
+    item; it was previously (wrongly) also trusted as the completion
+    signal itself ("X" -> Done, "1" -> Open). The client confirmed the
+    real completion signal is a completely different column: "HCAI/FDD
+    Use (Initial/Date)", the rightmost grid-sheet column -- filled in
+    means Done, blank means Open, regardless of whether the Required
+    marker is "X" or "1". Confirmed on a real file (SMR 3D 2022 Delta 1,
+    B-F1: Stage 1 Required = "x", HCAI/FDD Use blank) that the app was
+    reporting "Done" for an item with nothing actually signed off.
+
+    hcai_fdd_use is a single cell per physical row, not one per stage --
+    confirmed structurally (only one "HCAI/FDD Use" column exists on
+    each grid sheet) and against 172 real rows with 2+ required stages.
+    A row required for multiple stages (e.g. required_stages=[1,2])
+    therefore gets the IDENTICAL Done/Open status for every one of its
+    required stages -- there is no way, from this column alone, to mark
+    "done for stage 1 but not stage 2" on the same row. This is a real
+    limitation of the source file's own structure, not something this
+    function can resolve; see the fix's own report for how often that
+    actually occurs in practice.
+
+    See core.status_tracker.apply_file_derived_seed, which only uses
+    this as a fallback behind fill_status_by_index -- an explicit color
+    mark from Rey's team still wins if the two disagree.
     """
     result: dict[str, dict[int, str]] = {}
     for rec in records:
         if not rec.index:
             continue
+        hcai_filled = rec.hcai_fdd_use is not None and str(rec.hcai_fdd_use).strip() != ""
+        completion_status = "Done" if hcai_filled else "Open"
         stages = {}
         for stage, value in rec.stage_values.items():
-            status = stage_marker_status(value)
-            if status in ("Done", "Open"):
-                stages[stage] = status
+            if stage_marker_status(value) not in ("Done", "Open"):
+                continue  # not a recognized required-stage marker (blank, 0, or e.g. "NA")
+            stages[stage] = completion_status
         if stages:
             result[rec.index] = stages
     return result

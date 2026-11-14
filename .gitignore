@@ -11,3 +11,9 @@ __pycache__/
 venv/
 .DS_Store
 ~$*.xls*
+
+# Real client HMR/SMR project files (actual project data: names,
+# agencies, scopes of work) -- used locally for fixture-driven tests,
+# never committed to this public repo. Tests that read this folder
+# skip cleanly (print "SKIP: ...", exit 0) when it's absent.
+tests/fixtures/hmr_smr_projects/

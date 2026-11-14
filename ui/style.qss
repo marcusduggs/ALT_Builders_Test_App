@@ -51,6 +51,12 @@ QLabel#hint {
     font-size: 12px;
 }
 
+QLabel#filterActiveIndicator {
+    color: #8a5a00;
+    font-size: 12px;
+    font-weight: 600;
+}
+
 /* ---------- buttons ----------
    Three deliberate tiers, applied consistently across the whole app
    (increment list, Add/Update Project, Data Location, Review screen,
@@ -195,6 +201,17 @@ QComboBox:hover, QLineEdit:hover, QSpinBox:hover {
 QComboBox::drop-down {
     border: none;
     width: 22px;
+}
+/* Forces Qt's own popup rendering instead of deferring to a native
+   macOS popup menu -- the Sum Data filter bar's combos (see
+   ui.widgets.sum_data_filter_bar) widen their popup view to fit long
+   item text and cap visible rows with a scrollbar via
+   setMaxVisibleItems(); a native popup can ignore both and run off the
+   edges of the screen. No visible effect on a style where Qt was
+   already using its own popup (this app's QComboBox QAbstractItemView
+   rule above already only works against that rendering path). */
+QComboBox {
+    combobox-popup: 0;
 }
 /* QComboBox's dropdown popup is its OWN QAbstractItemView, separate from
    the QComboBox rule above -- unstyled, it hits the identical OS-dark-

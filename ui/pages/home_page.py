@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from functools import partial
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from core import app_config, combined_export, update_check
 from core.app_version import APP_VERSION
+from core.excel_reader import derive_short_display_name
 from core.increment_matcher import MatchType
 from core.project_store import ProjectStore
 from core.update_check import UpdateStatus
@@ -53,7 +54,6 @@ EXCEL_FILE_FILTER = "TIO Workbooks (*.xlsm *.xlsx)"
 # next to it. Replaces the old 48px inline size used when the logo sat in
 # the Project row instead of its own header -- see _build_header().
 HEADER_LOGO_HEIGHT_PX = 72
-INCREMENT_TABLE_MAX_HEIGHT_PX = 320  # ~7-8 rows before a scrollbar kicks in -- see _refresh_increment_table
 
 
 def _make_white_background_transparent(pixmap: QPixmap, threshold: int = 248) -> QPixmap:
@@ -77,6 +77,43 @@ def _make_white_background_transparent(pixmap: QPixmap, threshold: int = 248) ->
     return QPixmap.fromImage(image)
 
 
+class _IncrementTable(QTableWidget):
+    """A plain QTableWidget's sizeHint() does NOT reflect its actual
+    row/column content -- it's Qt's generic QAbstractScrollArea default,
+    a hardcoded QSize(256, 192) -- confirmed empirically: capping a
+    PLAIN QTableWidget's maximumHeight at some large, content-derived
+    value with no layout stretch involved anywhere still only ever
+    rendered at 192px regardless of how many real rows existed or how
+    generous the cap was.
+
+    This override makes sizeHint() return the table's REAL current
+    content height instead (set via set_natural_height(), called by
+    HomePage._resize_increment_table_to_content() every refresh/resize)
+    -- so a normal, zero-stretch QVBoxLayout (see HomePage.__init__)
+    sizes this table to its own actual content by default, the same
+    straightforward way Qt layouts size any other non-stretched widget,
+    with no stretch-factor juggling needed anywhere. setMaximumHeight()
+    (set by that same method, to the window's actual available space)
+    then independently caps the RENDERED size below sizeHint() when
+    there's more content than room -- Qt's own normal sizeHint/
+    maximumSize negotiation, not manual min()-ing of the two values.
+    """
+
+    def __init__(self, rows: int, columns: int, parent=None):
+        super().__init__(rows, columns, parent)
+        self._natural_height = 0
+
+    def set_natural_height(self, height: int) -> None:
+        if height != self._natural_height:
+            self._natural_height = height
+            self.updateGeometry()  # invalidate cached layout size hints so the new value takes effect immediately
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setHeight(self._natural_height)
+        return hint
+
+
 class HomePage(QWidget):
     def __init__(self, store: MockDataStore, on_view_data, on_view_combined, parent=None):
         super().__init__(parent)
@@ -96,17 +133,35 @@ class HomePage(QWidget):
         outer.addWidget(self._build_header())
 
         content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(16)
-        content_layout.addWidget(self._build_project_bar())
-        content_layout.addWidget(self._build_increment_section())
-        # No stretch on the section above -- it now sizes to its own
-        # content (see INCREMENT_TABLE_MAX_HEIGHT_PX/_refresh_increment_table),
-        # so any space left over past that shows the plain page
-        # background (QMainWindow's #f4f5f7) instead of an empty white
-        # card stretched to fill the window.
-        content_layout.addStretch(1)
+        self._content_layout = QVBoxLayout(content)
+        self._content_layout.setContentsMargins(20, 20, 20, 20)
+        self._content_layout.setSpacing(16)
+        self._content_layout.addWidget(self._build_project_bar())
+        # No stretch on the Increments card -- it sizes to its own
+        # actual content by default, same as any other non-stretched
+        # widget in a Qt layout, because _IncrementTable overrides
+        # sizeHint() to report that real content height (see that
+        # class's docstring for why that override exists at all: a
+        # PLAIN QTableWidget's sizeHint() is Qt's generic, content-
+        # blind 256x192 default, which is what forced the EARLIER
+        # version of this fix into stretch-factor tricks -- and why
+        # those tricks had to center a clamped-below-offer table inside
+        # its stretch allotment, leaving a gap ABOVE the Increments
+        # card with few increments, which is the bug this rewrite
+        # fixes). The trailing addStretch(1) below absorbs whatever
+        # window space is left over past the card's natural size,
+        # exactly like every other "card sized to content, stretch
+        # soaks the rest" section on this page.
+        #
+        # _resize_increment_table_to_content() (every refresh AND every
+        # window resize) sets the table's real natural height via
+        # set_natural_height() AND caps its maximumHeight at the
+        # window's actual available space -- Qt's own normal sizeHint/
+        # maximumSize negotiation then renders it at whichever is
+        # smaller, with no manual min()-ing or stretch factors needed.
+        self.increment_section_frame = self._build_increment_section()
+        self._content_layout.addWidget(self.increment_section_frame)
+        self._content_layout.addStretch(1)
         outer.addWidget(content, stretch=1)
 
         self._refresh_project_combo()
@@ -424,7 +479,7 @@ class HomePage(QWidget):
         header_row.addWidget(upload_button)
         layout.addLayout(header_row)
 
-        self.increment_table = QTableWidget(0, 5)
+        self.increment_table = _IncrementTable(0, 5)
         self.increment_table.setHorizontalHeaderLabels(["", "Increment", "Version", "Last Updated", "Actions"])
         self.increment_table.verticalHeader().hide()
         self.increment_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -493,7 +548,12 @@ class HomePage(QWidget):
             checkbox_layout.addWidget(checkbox)
             self.increment_table.setCellWidget(row, 0, checkbox_container)
 
-            self.increment_table.setItem(row, 1, QTableWidgetItem(increment.name))
+            # Short display name, full name as tooltip -- same overflow
+            # fix as ui.pages.data_view_page's title bar/"Increment"
+            # column (see core.excel_reader.derive_short_display_name).
+            name_item = QTableWidgetItem(derive_short_display_name(increment.name))
+            name_item.setToolTip(increment.name)
+            self.increment_table.setItem(row, 1, name_item)
 
             version_combo = QComboBox()
             version_records = self.store.list_versions(project_name, increment.name)
@@ -538,22 +598,48 @@ class HomePage(QWidget):
             )
 
         self.increment_table.setVisible(bool(increments))
-        self._resize_increment_table_to_content()
+        self._schedule_resize_increment_table_to_content()
         self.empty_state_label.setVisible(not increments)
         self.select_all_checkbox.blockSignals(True)
         self.select_all_checkbox.setChecked(False)
         self.select_all_checkbox.blockSignals(False)
         self._refresh_combined_buttons()
 
+    # Reserved below the table's own bottom edge for the Increments
+    # card's bottom margin/padding (see _build_increment_section's
+    # layout.setContentsMargins) plus a small safety allowance -- the
+    # table's actual on-screen bottom edge needs to land above the
+    # window's bottom edge by at least this much, or the card's own
+    # border/padding gets clipped.
+    _INCREMENT_TABLE_BOTTOM_ALLOWANCE_PX = 60
+
     def _resize_increment_table_to_content(self):
-        """Caps the table's height to its actual content (header + real
-        rows) instead of always stretching to fill the page -- with few
-        increments, that used to leave a large empty white area below
-        the last row (most visible when the window is maximized). Above
-        INCREMENT_TABLE_MAX_HEIGHT_PX, the table keeps its own normal
-        internal scrollbar (a QTableWidget already has one available;
-        nothing extra to wire up) instead of growing further. Recomputed
-        every refresh since row count changes each time.
+        """Every refresh AND on every window resize (see resizeEvent
+        below): tells the table its real natural content height (header
+        + real rows) via set_natural_height() -- which IS its sizeHint()
+        from then on, see _IncrementTable -- and caps its maximumHeight
+        at the window's actual available space. No stretch factor
+        anywhere, on this table or its containing card: with sizeHint()
+        correctly reflecting content (instead of a plain QTableWidget's
+        generic, content-blind 256x192 default), a normal zero-stretch
+        layout already sizes the table to its own content by default,
+        the same way it would for any other non-stretched widget -- and
+        setMaximumHeight() independently caps that below sizeHint()
+        whenever there's more content than the window can actually fit,
+        via Qt's own normal sizeHint/maximumSize negotiation, not a
+        stretch factor fight or a manual min() of the two values.
+
+        This replaced an earlier version that DID use stretch factors
+        (giving the card a large, constant stretch so it could claim
+        layout leftover space ahead of a required sibling spacer, with
+        a toggled maximumHeight as the only variable) -- confirmed
+        broken in practice: whenever the resulting cap was SMALLER than
+        what that stretch allotment offered, Qt rendered the clamped
+        table CENTERED within the larger offered space, i.e. the blank
+        leftover space showed up ABOVE the Increments card instead of
+        below it. Overriding sizeHint() instead of fighting over
+        stretch avoids that failure mode entirely, since nothing is
+        ever offered more space than it asks for in the first place.
         """
         header_height = self.increment_table.horizontalHeader().height()
         rows_height = sum(
@@ -561,7 +647,50 @@ class HomePage(QWidget):
         )
         border_allowance = 2 * self.increment_table.frameWidth() + 2
         natural_height = header_height + rows_height + border_allowance
-        self.increment_table.setMaximumHeight(min(natural_height, INCREMENT_TABLE_MAX_HEIGHT_PX))
+        self.increment_table.set_natural_height(natural_height)
+
+        # The table's own Y position already reflects everything above
+        # it (masthead + project bar + the Increments card's own title
+        # row + every margin/spacing in between) -- so the window's
+        # total height minus that position minus a bottom allowance is
+        # exactly how much room is actually left for the table itself.
+        table_top = self.increment_table.mapTo(self, self.increment_table.rect().topLeft()).y()
+        available_height = self.height() - table_top - self._INCREMENT_TABLE_BOTTOM_ALLOWANCE_PX
+        self.increment_table.setMaximumHeight(max(0, available_height))
+
+    def _schedule_resize_increment_table_to_content(self):
+        """Defers _resize_increment_table_to_content() to the next
+        event-loop iteration (QTimer.singleShot(0, ...), a standard Qt
+        idiom for "geometry isn't settled yet") instead of calling it
+        immediately -- needed because _refresh_increment_table() can run
+        BEFORE this page has ever actually been shown at its real size
+        (confirmed: HomePage.__init__'s own _refresh_project_combo()
+        call triggers the project combo's signal, which runs
+        _refresh_increment_table() during construction, well before
+        __init__ returns to whatever code goes on to size/show the
+        window). Computing "available space" from self.height() at
+        that point reads Qt's unsettled/default construction-time
+        geometry, not the real window size -- and because the result
+        gets baked in via setFixedHeight (a hard floor, not just an
+        upper bound), that bad value can permanently prevent the
+        window from ever being as small as the user actually wants,
+        confirmed empirically (a requested 450px-tall window stayed
+        stuck at 696px). Deferring until the event loop actually runs
+        guarantees real geometry is available by the time this reads it.
+        """
+        QTimer.singleShot(0, self._resize_increment_table_to_content)
+
+    def resizeEvent(self, event):
+        """Window resizes don't otherwise trigger a re-layout of the
+        Increments table's explicit height (see
+        _resize_increment_table_to_content -- it's set directly, not
+        via Qt layout stretch, specifically so the few-increments case
+        doesn't render with a centered gap above it), so this is
+        recomputed on every resize too, not just on data refresh.
+        """
+        super().resizeEvent(event)
+        if hasattr(self, "increment_table"):
+            self._schedule_resize_increment_table_to_content()
 
     # ------------------------------------------------------------------
     # Part 2b: multi-increment selection + combined view/export

@@ -109,6 +109,11 @@ class Increment:
     # alongside a longer one still shows every stage the longer one has,
     # blank/not-applicable for the shorter one's own rows.
     stage_count: int = 0
+    # Project #, e.g. "S231014-38-00" -- core.excel_reader.parse_project_info's
+    # "project_number", read straight off the source file's "A-Project Info"
+    # sheet (cell I12, next to Facility Name) but previously discarded after
+    # parsing. Static per version, safe to compute once, same as stage_names.
+    project_number: Any = None
 
     @property
     def needs_status_row_count(self) -> int:
@@ -188,12 +193,13 @@ def build_combined_view(increments: list[Increment]) -> CombinedView:
         all_data_rows=combined_export.build_combined_all_data_rows(increments),
         all_data_totals=combined_export.combine_all_data_totals(increments, stage_count),
         sum_data_rows=sum_data_rows,
-        # real_rows() strips this list's per-increment subtotal marker
-        # rows out first -- same reason core.combined_export's own
-        # writer does, see its module docstring: this OVERALL total must
-        # not be thrown off by (or double-count) a subtotal marker
-        # sitting alongside the real rows in the same flat list.
-        sum_data_totals=excel_reader.live_sum_data_totals(combined_export.real_rows(sum_data_rows), stage_count),
+        # Sums each increment's OWN already-computed live_sum_data_totals()
+        # result (same as each increment's own Subtotal row) rather than
+        # recomputing from sum_data_rows -- that list is flattened per
+        # (index, stage), with no single "is this item Done" concept to
+        # recompute an overall total from directly. See
+        # core.combined_export.combine_sum_data_totals.
+        sum_data_totals=combined_export.combine_sum_data_totals(increments),
         report_rows=combined_export.build_combined_report_rows(increments),
         comments_rows=combined_export.build_combined_comments_rows(increments),
         **combined_export.build_combined_changes_data(increments),
@@ -325,13 +331,45 @@ def _sum_data_rows(all_data_rows: list[dict], sum_data_df: Any) -> list[dict]:
     inclusion filter guarantees a grid row always has at least one
     required stage to be in sum_data_df at all -- so that's what's used
     below to pick the right transform.
+
+    Matches sum_data_df rows to all_data_rows by walking forward through
+    all_data_rows in order, NOT by building an {index: row} dict -- an
+    Index is only unique by convention, not by construction (confirmed on
+    a real HMR/SMR file: F-Cons Verif's "Reference Number" column can
+    repeat, e.g. two distinct physical rows both numbered "3", producing
+    two separate "F-3" records). A dict keyed by index would collapse
+    those into one entry and silently apply ITS description/vcr to every
+    sum_data_df row sharing that index, instead of each row getting its
+    own source data. sum_data_df is built from the exact same `records`
+    list/order that all_data_rows is (core.excel_reader.build_sum_data()
+    filters that list, never reorders or dedupes it), so a single forward
+    pointer -- never looking backward, never reusing a row -- always
+    lands on the correct 1:1 match even when indexes repeat.
+
+    The walk also skips any all_data_rows entry with a blank description
+    (excel_reader.is_blank_description()), the same rule build_sum_data()
+    itself uses to drop such rows from sum_data_df entirely -- a blank
+    row can never be the real match for a sum_data_df entry, even when
+    it shares an Index with one that IS real (confirmed on the same real
+    file: F-Cons Verif's blank "F-3" row and its real "F-3" row, Stage 1:
+    Construction Final -- without this, the pointer would stop on the
+    blank row first, since it comes first in file order, and wrongly
+    report its blank description/status for the one real sum_data_df
+    row that's actually supposed to match the non-blank one).
     """
-    all_data_by_index = {row["index"]: row for row in all_data_rows}
     rows = []
+    pos = 0
+    total_rows = len(all_data_rows)
     for index in sum_data_df["Index"]:
-        source = all_data_by_index.get(index)
-        if source is None:
+        while pos < total_rows and (
+            all_data_rows[pos]["index"] != index
+            or excel_reader.is_blank_description(all_data_rows[pos]["description"])
+        ):
+            pos += 1
+        if pos >= total_rows:
             continue
+        source = all_data_rows[pos]
+        pos += 1
         is_milestone_row = not source["required_stages"]
         vcr_transform = excel_reader.vcr_marker_status if is_milestone_row else excel_reader.stage_marker_status
         rows.append(
@@ -435,7 +473,9 @@ class MockDataStore:
         """
         increment_name = excel_reader.get_record_name(file_path)
         parsed = excel_reader.normalize_workbook(file_path)
-        record = self.store.create_increment(project_name, increment_name, file_path)
+        record = self.store.create_increment(
+            project_name, increment_name, file_path, project_number=parsed["project_info"]["project_number"]
+        )
 
         required_stages = excel_reader.required_stages_by_index(parsed["all_data"])
         empty_carry = status_tracker.CarryForwardResult(needs_status=dict(required_stages))
@@ -712,6 +752,7 @@ class MockDataStore:
             all_data_totals=parsed["all_data_totals"],
             stage_names=parsed["project_info"]["stage_names"],
             stage_count=parsed["stage_count"],
+            project_number=parsed["project_info"]["project_number"],
         )
 
     def set_stage_status(self, project_name: str, increment_name: str, index: str, stage: int, status: str) -> None:

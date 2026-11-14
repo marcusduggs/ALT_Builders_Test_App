@@ -162,9 +162,11 @@ def _run(failures):
         # ------------------------------------------------------------
         ws_sum = wb["Sum Data"]
         sum_header = [c.value for c in ws_sum[1]]
-        if sum_header[0] != "Increment":
-            failures.append(f"1b: Sum Data's first column should be 'Increment', got {sum_header[0]!r}")
-        sum_increment_values = [ws_sum.cell(row=r, column=1).value for r in range(2, ws_sum.max_row)]
+        if sum_header[0] != "Project #" or sum_header[1] != "Increment":
+            failures.append(f"1b: Sum Data's first two columns should be ['Project #', 'Increment'], got {sum_header[:2]!r}")
+        sum_increment_values = [
+            ws_sum.cell(row=r, column=excel_export.SUM_DATA_INCREMENT_COL).value for r in range(2, ws_sum.max_row)
+        ]
         # order already thoroughly checked via All Data above -- Sum Data
         # is built from the same per-increment iteration, so just confirm
         # both increments' rows actually made it into this sheet too.
@@ -231,22 +233,28 @@ def _run(failures):
                 f"got {actual_all_data_grand_total_sum}"
             )
 
-        # Same contiguity + correctness check for Sum Data.
-        sum_data_col1 = [ws_sum.cell(row=r, column=1).value for r in range(2, ws_sum.max_row + 1)]
-        inc2_sum_subtotal_idx = sum_data_col1.index(inc2_subtotal_label) if inc2_subtotal_label in sum_data_col1 else None
+        # Same contiguity + correctness check for Sum Data -- long-format
+        # now (one row per (Index, Stage), not per item), so this reads
+        # the Increment column at its own fixed position
+        # (core.excel_export.SUM_DATA_INCREMENT_COL) and the Total
+        # column at SUM_DATA_TOTAL_COL, not stage-count-dependent offsets.
+        sum_data_col_inc = [
+            ws_sum.cell(row=r, column=excel_export.SUM_DATA_INCREMENT_COL).value
+            for r in range(2, ws_sum.max_row + 1)
+        ]
+        inc2_sum_subtotal_idx = sum_data_col_inc.index(inc2_subtotal_label) if inc2_subtotal_label in sum_data_col_inc else None
         print(f"INC2 Sum Data subtotal row found at offset {inc2_sum_subtotal_idx}")
         if inc2_sum_subtotal_idx is None:
             failures.append(f"1b2: no Sum Data subtotal row found for INC2 ({inc2_subtotal_label!r})")
         else:
-            if sum_data_col1[inc2_sum_subtotal_idx - 1] != inc2.name:
+            if sum_data_col_inc[inc2_sum_subtotal_idx - 1] != inc2.name:
                 failures.append("1b2: Sum Data INC2 subtotal row is not immediately preceded by an INC2 real row")
-            if sum_data_col1[inc2_sum_subtotal_idx + 1] != inc3.name:
+            if sum_data_col_inc[inc2_sum_subtotal_idx + 1] != inc3.name:
                 failures.append("1b2: Sum Data INC2 subtotal row is not immediately followed by INC3's first real row")
 
             inc2_sum_ground_truth = excel_reader.live_sum_data_totals(inc2_v1.sum_data, inc2_v1.stage_count)
             excel_row = inc2_sum_subtotal_idx + 2
-            stage_count = EXPECTED_STAGE_COUNT
-            actual_grand_total = ws_sum.cell(row=excel_row, column=4 + stage_count + 4).value
+            actual_grand_total = ws_sum.cell(row=excel_row, column=excel_export.SUM_DATA_TOTAL_COL).value
             print(f"INC2 Sum Data subtotal grand_total={actual_grand_total} vs ground truth={inc2_sum_ground_truth['grand_total']}")
             if actual_grand_total != inc2_sum_ground_truth["grand_total"]:
                 failures.append(
@@ -259,7 +267,7 @@ def _run(failures):
             excel_reader.live_sum_data_totals(inc2_v1.sum_data, inc2_v1.stage_count)["grand_total"]
             + excel_reader.live_sum_data_totals(inc3_latest.sum_data, inc3_latest.stage_count)["grand_total"]
         )
-        actual_sum_data_grand_total = ws_sum.cell(row=ws_sum.max_row, column=4 + EXPECTED_STAGE_COUNT + 4).value
+        actual_sum_data_grand_total = ws_sum.cell(row=ws_sum.max_row, column=excel_export.SUM_DATA_TOTAL_COL).value
         print(f"Sum Data Grand Total: {actual_sum_data_grand_total} (expected {expected_sum_data_grand_total})")
         if actual_sum_data_grand_total != expected_sum_data_grand_total:
             failures.append(

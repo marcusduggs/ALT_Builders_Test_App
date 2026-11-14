@@ -4,30 +4,23 @@ Regression test for a real reported crash: combining INC 2 (sample_increment.xls
 raised `KeyError: 3` in ui.pages.combined_data_view_page._build_sum_data_tab's
 per-increment subtotal row, at `totals["stage_open_counts"][stage]`.
 
-Root cause: core.combined_export.build_combined_sum_data_rows() computes each
-increment's own "subtotal_totals" with THAT increment's own (possibly narrower)
-stage_count (see its docstring) -- so INC 8's stage_open_counts dict only ever
-has keys {1, 2}. The Sum Data tab iterates the SHEET's wider union stage_count
-(here, 42, from INC 2) and indexed into that dict directly. Two sibling code
-paths already guarded against exactly this gap -- the All Data tab's subtotal
-row (ui.pages.combined_data_view_page, `.get(f"Stage {stage}", 0)`) and the
-combined .xlsx writer's own Sum Data subtotal row
-(core.combined_export._write_sum_data_subtotal_row, `.get(stage, 0)`) -- only
-the Sum Data tab's on-screen rendering was missed. Fixed by the matching
-`.get(stage, 0)`.
+Root cause (historical): Sum Data used to be WIDE -- one row per item, with a
+fixed "Stage 1".."Stage N" column range sized to the sheet's union max stage
+count (here 42, from INC 2). core.combined_export.build_combined_sum_data_rows()
+computed each increment's own "subtotal_totals" with THAT increment's own
+(possibly narrower) stage_count, so INC 8's stage_open_counts dict only ever
+had keys {1, 2} -- but the Sum Data tab indexed it across the full union range
+and crashed on stage 3.
 
-The exact crash site (ui.pages.combined_data_view_page.CombinedDataViewPage.
-_build_sum_data_tab, run from __init__) is a QWidget method, and no other
-test in this suite spins up Qt (see tests/test_error_surfacing.py's module
-docstring) -- but a data-layer-only reproduction of the failing dict access
-can't actually regression-test THAT line, since it would just re-implement
-the fix rather than exercise it. So this test instantiates the real
-CombinedDataViewPage under QT_QPA_PLATFORM=offscreen (set below, before any
-Qt import) and reads its actual QStandardItemModel back -- construction and
-painting only, no app.exec_()/blocking event loop, matching the spirit of
-"no Qt event loop" while still exercising the real buggy line. It also
-separately confirms the sibling EXPORT path (core.combined_export, unaffected
-by this bug, already correct) still produces the right values end to end.
+Sum Data is now long-format (core.excel_reader.expand_sum_data_rows): one row
+per (Index, Stage) actually required for THAT item, with no fixed stage-column
+grid at all -- there's nothing for a narrower increment's rows to misalign
+against, so this exact bug class can no longer occur by construction. This
+test instead confirms the fix's INTENT still holds in the new shape:
+combining these two increments doesn't crash, INC 8's own rows never claim a
+stage past its own real 2, and every per-increment subtotal / overall Totals
+number is correct -- both on screen (the exact widget construction that used
+to crash) and in the export.
 
 Run directly: `python tests/test_combined_mixed_stage_counts.py`
 """
@@ -44,7 +37,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import openpyxl
 from PySide6.QtWidgets import QApplication
 
-from core import combined_export
+from core import combined_export, excel_export
+from core.excel_reader import derive_short_display_name, expand_sum_data_rows, live_sum_data_totals
 from core.project_store import ProjectStore
 from ui.mock_data import MockDataStore, build_combined_view
 from ui.pages.combined_data_view_page import CombinedDataViewPage
@@ -77,7 +71,7 @@ def main():
         # ------------------------------------------------------------
         # 1 -- build_combined_view() itself must not raise, and its union
         # stage_count must be the WIDER increment's, not the narrower one's
-        # (i.e. the mismatch this bug depends on must actually be present).
+        # (still meaningful for All Data, which stays wide/unchanged).
         # ------------------------------------------------------------
         view = build_combined_view([dsample, d8])
         print(f"Combined view stage_count (union): {view.stage_count}")
@@ -87,80 +81,101 @@ def main():
                 f"got {view.stage_count}"
             )
 
+        d8_entries = expand_sum_data_rows(d8.sum_data)
+        dsample_entries = expand_sum_data_rows(dsample.sum_data)
+        d8_stages = {entry["stage"] for entry in d8_entries if entry["stage"] != "VCR"}
+        print(f"INC 8's own real Stage # values (from its Sum Data rows): {sorted(d8_stages)}")
+        if any(isinstance(s, int) and s > 2 for s in d8_stages):
+            failures.append(
+                f"1: fixture/behavior assumption broken -- INC 8 only has 2 real stages, but its "
+                f"expanded Sum Data rows claim a stage number past that: {sorted(d8_stages)}"
+            )
+
         # ------------------------------------------------------------
         # 2 -- instantiate the REAL CombinedDataViewPage (the actual
         # crash site: _build_sum_data_tab runs from __init__) and read
-        # its actual QStandardItemModel back. Confirms the narrower
-        # increment's own stage_open_counts dict really is sparse first
-        # (so this test would fail loudly, not silently pass, if the
-        # underlying data shape ever stopped being sparse), then confirms
-        # construction doesn't raise and the rendered cells hold the
-        # right values -- not just that nothing crashed.
+        # its actual QStandardItemModel back -- confirms construction
+        # doesn't raise, the right NUMBER of rows render (both
+        # increments' own (Index, Stage) rows + 2 subtotal rows + 1
+        # grand-totals row), and the subtotal/grand-total VALUES are
+        # correct -- not just that nothing crashed.
         # ------------------------------------------------------------
         print("\n" + "=" * 70)
-        print("2 -- CombinedDataViewPage's real Sum Data subtotal rows (the crash site)")
+        print("2 -- CombinedDataViewPage's real Sum Data rows (the crash site)")
         print("=" * 70)
-
-        subtotal_rows = {row["increment"]: row for row in view.sum_data_rows if row["is_subtotal"]}
-        if d8.name not in subtotal_rows or dsample.name not in subtotal_rows:
-            failures.append("2: expected exactly one subtotal row per increment")
-        else:
-            inc8_stage_open_counts = subtotal_rows[d8.name]["subtotal_totals"]["stage_open_counts"]
-            print(f"INC 8 subtotal stage_open_counts keys: {sorted(inc8_stage_open_counts.keys())}")
-            if 3 in inc8_stage_open_counts:
-                failures.append(
-                    "2: fixture/behavior assumption broken -- INC 8's own stage_open_counts should NOT "
-                    "have a key for stage 3 (it only has 2 stages); if it now does, this test no longer "
-                    "exercises the sparse-dict gap the bug depended on"
-                )
 
         app = QApplication.instance() or QApplication(sys.argv)
         try:
             page = CombinedDataViewPage(PROJECT_NAME, view, store, on_back=lambda: None)
         except KeyError as e:
             failures.append(
-                f"2: constructing CombinedDataViewPage raised KeyError({e}) -- this is the exact reported "
-                "crash (ui.pages.combined_data_view_page._build_sum_data_tab indexing "
-                "totals['stage_open_counts'][stage] without a default)"
+                f"2: constructing CombinedDataViewPage raised KeyError({e}) -- a narrower increment's "
+                "own data should never be indexed against a wider union range in the long-format layout"
             )
             page = None
 
         if page is not None:
             model = page.sum_data_table.model()
-            FROZEN_COLUMNS = 4  # Increment, Index, Description, Approval Agency
+            expected_row_count = len(d8_entries) + len(dsample_entries) + 2 + 1  # +2 subtotals, +1 Totals
+            print(f"Rendered Sum Data row count: {model.rowCount()} (expected {expected_row_count})")
+            if model.rowCount() != expected_row_count:
+                failures.append(
+                    f"2: expected {expected_row_count} rendered Sum Data rows "
+                    f"({len(d8_entries)} + {len(dsample_entries)} real + 2 subtotal + 1 Totals), "
+                    f"got {model.rowCount()}"
+                )
 
-            def _find_subtotal_row(label: str):
+            def _find_row(label: str, col: int = 1):
+                # model.data(), not model.item() -- page.sum_data_table.model()
+                # is now a QSortFilterProxyModel (the Sum Data filter bar's
+                # proxy, see ui.widgets.sum_data_filter_bar), which has no
+                # .item() (that's QStandardItemModel-specific); .data()
+                # works identically on both.
                 for r in range(model.rowCount()):
-                    item = model.item(r, 0)
-                    if item is not None and item.text() == label:
+                    if model.data(model.index(r, col)) == label:
                         return r
                 return None
 
-            inc8_row = _find_subtotal_row(f"{d8.name} — Subtotal")
-            inc2_row = _find_subtotal_row(f"{dsample.name} — Subtotal")
-            if inc8_row is None or inc2_row is None:
-                failures.append("2: expected a subtotal row for each increment in the rendered model")
+            # Preview Subtotal labels use the SHORT display name (see
+            # core.excel_reader.derive_short_display_name), a labels-
+            # only exception to preview/export parity -- the EXPORTED
+            # label (checked in step 3 below) still uses the full name
+            # unchanged.
+            inc8_subtotal_row = _find_row(f"{derive_short_display_name(d8.name)} — Subtotal")
+            inc2_subtotal_row = _find_row(f"{derive_short_display_name(dsample.name)} — Subtotal")
+            totals_row = _find_row("Totals")
+            if inc8_subtotal_row is None or inc2_subtotal_row is None or totals_row is None:
+                failures.append("2: expected a subtotal row for each increment plus one overall Totals row")
             else:
-                def _stage_cell(row, stage):
-                    item = model.item(row, FROZEN_COLUMNS + (stage - 1))
-                    return int(item.text())
+                # Project#,Increment,Index,Description,Agency,Stage#,Status,Notes,CompletionDate,Open,Done,Total,%
+                OPEN_COL, DONE_COL, TOTAL_COL = 9, 10, 11
+                d8_totals = live_sum_data_totals(d8.sum_data, d8.stage_count)
+                dsample_totals = live_sum_data_totals(dsample.sum_data, dsample.stage_count)
+                combined_totals = combined_export.combine_sum_data_totals([dsample, d8])
 
-                inc8_stage3 = _stage_cell(inc8_row, 3)
-                inc2_stage14 = _stage_cell(inc2_row, 14)
-                print(f"Rendered INC 8 subtotal row, Stage 3: {inc8_stage3} (expected 0)")
-                print(f"Rendered INC 2 subtotal row, Stage 14: {inc2_stage14} (expected 28)")
-                if inc8_stage3 != 0:
-                    failures.append(f"2: rendered INC 8 subtotal Stage 3 should be 0, got {inc8_stage3}")
-                if inc2_stage14 != 28:
-                    failures.append(f"2: rendered INC 2 subtotal Stage 14 should be 28, got {inc2_stage14}")
+                inc8_rendered_total = int(model.data(model.index(inc8_subtotal_row, TOTAL_COL)))
+                inc2_rendered_total = int(model.data(model.index(inc2_subtotal_row, TOTAL_COL)))
+                grand_rendered_total = int(model.data(model.index(totals_row, TOTAL_COL)))
+                print(f"INC 8 subtotal Total: {inc8_rendered_total} (expected {d8_totals['grand_total']})")
+                print(f"INC 2 subtotal Total: {inc2_rendered_total} (expected {dsample_totals['grand_total']})")
+                print(f"Overall Totals row Total: {grand_rendered_total} (expected {combined_totals['grand_total']})")
+                if inc8_rendered_total != d8_totals["grand_total"]:
+                    failures.append(
+                        f"2: INC 8's rendered subtotal Total should be {d8_totals['grand_total']}, got {inc8_rendered_total}"
+                    )
+                if inc2_rendered_total != dsample_totals["grand_total"]:
+                    failures.append(
+                        f"2: INC 2's rendered subtotal Total should be {dsample_totals['grand_total']}, got {inc2_rendered_total}"
+                    )
+                if grand_rendered_total != combined_totals["grand_total"]:
+                    failures.append(
+                        f"2: overall rendered Totals row Total should be {combined_totals['grand_total']}, got {grand_rendered_total}"
+                    )
 
         # ------------------------------------------------------------
-        # 3 -- the sibling EXPORT path (core.combined_export) was already
-        # correct (it has its own .get(stage, 0) at
-        # _write_sum_data_subtotal_row) -- confirm it still is, end to
-        # end, against the real .xlsx it writes. Not the bug that was
-        # fixed, but the other half of "same underlying data, both paths
-        # must agree" the user asked to re-confirm.
+        # 3 -- the sibling EXPORT path (core.combined_export) -- confirm
+        # it still produces the right values end to end against the real
+        # .xlsx it writes, using the new long-format column constants.
         # ------------------------------------------------------------
         print("\n" + "=" * 70)
         print("3 -- combined EXPORT path (core.combined_export)")
@@ -171,30 +186,35 @@ def main():
 
         wb = openpyxl.load_workbook(export_path)
         ws = wb["Sum Data"]
-        col1 = [ws.cell(row=r, column=1).value for r in range(1, ws.max_row + 1)]
+        increment_col = [
+            ws.cell(row=r, column=excel_export.SUM_DATA_INCREMENT_COL).value for r in range(1, ws.max_row + 1)
+        ]
         inc8_label = f"{d8.name} — Subtotal"
         inc2_label = f"{dsample.name} — Subtotal"
-        if inc8_label not in col1 or inc2_label not in col1:
+        if inc8_label not in increment_col or inc2_label not in increment_col:
             failures.append("3: expected both increments' subtotal rows in the exported Sum Data sheet")
         else:
-            inc8_row = col1.index(inc8_label) + 1
-            inc2_row = col1.index(inc2_label) + 1
-            stage3_col = 5 + 2  # Increment, Index, Description, Approval Agency, then stages from col 5
-            stage14_col = 5 + 13
-            inc8_stage3 = ws.cell(row=inc8_row, column=stage3_col).value
-            inc2_stage14 = ws.cell(row=inc2_row, column=stage14_col).value
-            print(f"Exported INC 8 subtotal row, Stage 3: {inc8_stage3} (expected 0)")
-            print(f"Exported INC 2 subtotal row, Stage 14: {inc2_stage14} (expected 28)")
-            if inc8_stage3 != 0:
-                failures.append(f"3: exported INC 8 subtotal Stage 3 should be 0, got {inc8_stage3}")
-            if inc2_stage14 != 28:
-                failures.append(f"3: exported INC 2 subtotal Stage 14 should be 28, got {inc2_stage14}")
+            inc8_row = increment_col.index(inc8_label) + 1
+            inc2_row = increment_col.index(inc2_label) + 1
+            d8_totals = live_sum_data_totals(d8.sum_data, d8.stage_count)
+            dsample_totals = live_sum_data_totals(dsample.sum_data, dsample.stage_count)
+            inc8_exported_total = ws.cell(row=inc8_row, column=excel_export.SUM_DATA_TOTAL_COL).value
+            inc2_exported_total = ws.cell(row=inc2_row, column=excel_export.SUM_DATA_TOTAL_COL).value
+            print(f"Exported INC 8 subtotal Total: {inc8_exported_total} (expected {d8_totals['grand_total']})")
+            print(f"Exported INC 2 subtotal Total: {inc2_exported_total} (expected {dsample_totals['grand_total']})")
+            if inc8_exported_total != d8_totals["grand_total"]:
+                failures.append(f"3: exported INC 8 subtotal Total should be {d8_totals['grand_total']}, got {inc8_exported_total}")
+            if inc2_exported_total != dsample_totals["grand_total"]:
+                failures.append(f"3: exported INC 2 subtotal Total should be {dsample_totals['grand_total']}, got {inc2_exported_total}")
 
+            combined_totals = combined_export.combine_sum_data_totals([dsample, d8])
             totals_row = ws.max_row
-            totals_stage14 = ws.cell(row=totals_row, column=stage14_col).value
-            print(f"Exported combined Totals row, Stage 14: {totals_stage14} (expected 28, INC 8 contributes 0)")
-            if totals_stage14 != 28:
-                failures.append(f"3: exported combined Totals Stage 14 should be 28, got {totals_stage14}")
+            exported_grand_total = ws.cell(row=totals_row, column=excel_export.SUM_DATA_TOTAL_COL).value
+            print(f"Exported overall Totals row Total: {exported_grand_total} (expected {combined_totals['grand_total']})")
+            if exported_grand_total != combined_totals["grand_total"]:
+                failures.append(
+                    f"3: exported overall Totals Total should be {combined_totals['grand_total']}, got {exported_grand_total}"
+                )
 
     print("\n" + "=" * 70)
     if failures:
@@ -203,9 +223,10 @@ def main():
             print(" -", f)
         raise SystemExit(1)
     else:
-        print("RESULT: PASS -- combining a 2-stage and a 42-stage increment no longer crashes the Sum Data "
-              "tab's per-increment subtotal rows; stages unique to the wider increment correctly default to 0 "
-              "for the narrower one instead of raising KeyError, in both the on-screen data and the export.")
+        print("RESULT: PASS -- combining a 2-stage and a 42-stage increment no longer has a wide "
+              "stage-column grid to crash against at all; Sum Data's long (Index, Stage) row format "
+              "renders and exports correctly for both increments, with correct per-increment subtotal "
+              "and overall Totals numbers.")
 
 
 if __name__ == "__main__":
