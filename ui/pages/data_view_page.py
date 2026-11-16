@@ -128,7 +128,7 @@ from core.excel_reader import derive_short_display_name, expand_sum_data_rows, l
 from ui.mock_data import Increment, MockDataStore
 from ui.widgets.frozen_table import FrozenTableView
 from ui.widgets.sum_data_filter_bar import apply_filtering, mark_summary_row
-from ui.workers import run_with_progress
+from ui.workers import run_with_progress, show_storage_error
 
 # Sum Data filter bar: which columns get a filter dropdown, and their
 # labels -- Project #, Increment, Index, Approval Agency, Stage #,
@@ -763,8 +763,18 @@ class DataViewPage(QWidget):
         current = stage_status.get(stage)
         new_status = "Open" if current in (None, "Done") else "Done"
 
-        # Persist immediately -- cheap local JSON write, no "Save" button.
-        self.store.set_stage_status(self.project_name, self.increment.name, row_data["index"], stage, new_status)
+        # Persist immediately -- cheap local JSON write, no "Save"
+        # button. Guarded: a write failure here (e.g. a Windows path-
+        # length OSError -- see core.project_store's
+        # _MAX_INCREMENT_SLUG_LENGTH docstring) must not go on to
+        # update the in-memory stage_status below, which would leave
+        # the screen showing a status change that was never actually
+        # persisted to status.json.
+        try:
+            self.store.set_stage_status(self.project_name, self.increment.name, row_data["index"], stage, new_status)
+        except OSError as exc:
+            show_storage_error(self, exc)
+            return
 
         # Update in-memory state and just the affected cells -- no
         # workbook re-parse, no full-table rebuild. Increment.sum_data
@@ -1430,13 +1440,21 @@ class DataViewPage(QWidget):
         text = self.comment_input.toPlainText().strip()
         if not text:
             return  # nothing to save -- silently ignore, no error dialog for an empty comment
-        entry = self.store.add_comment(self.project_name, self.increment.name, text)
+        try:
+            entry = self.store.add_comment(self.project_name, self.increment.name, text)
+        except OSError as exc:
+            show_storage_error(self, exc)
+            return
         self.increment.comments.append(entry)
         self.comment_input.clear()
         self._refresh_comments_list()
 
     def _on_save_comment_edit(self, comment_id: str, new_text: str):
-        updated = self.store.update_comment(self.project_name, self.increment.name, comment_id, new_text)
+        try:
+            updated = self.store.update_comment(self.project_name, self.increment.name, comment_id, new_text)
+        except OSError as exc:
+            show_storage_error(self, exc)
+            return
         if updated is None:
             return  # comment was deleted from under us (e.g. a second window) -- nothing left to update
         for i, existing in enumerate(self.increment.comments):
@@ -1455,7 +1473,11 @@ class DataViewPage(QWidget):
         )
         if answer != QMessageBox.Yes:
             return
-        self.store.delete_comment(self.project_name, self.increment.name, comment_id)
+        try:
+            self.store.delete_comment(self.project_name, self.increment.name, comment_id)
+        except OSError as exc:
+            show_storage_error(self, exc)
+            return
         self.increment.comments = [c for c in self.increment.comments if c["id"] != comment_id]
         self._refresh_comments_list()
 

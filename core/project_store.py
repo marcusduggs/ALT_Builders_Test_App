@@ -88,6 +88,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import shutil
 import uuid
@@ -97,6 +98,8 @@ from pathlib import Path
 from typing import Any
 
 from core import app_config
+
+logger = logging.getLogger(__name__)
 
 DELETED_DIRNAME = "_deleted"
 
@@ -185,19 +188,125 @@ def _slugify(name: str) -> str:
 # A raw _slugify() of that text alone can exceed the OS's 255-byte
 # single-path-component limit and crash create_increment() with
 # OSError: File name too long (reproduced on 5 of 13 real fixture
-# files). Capped here, with headroom left for _unique_slug()'s own
-# "-2"/"-3" collision suffix -- this is an ON-DISK STORAGE concern only:
-# core.increment_matcher's identity matching still compares the FULL,
-# untruncated Record Name text, exactly as before. NOT applied to
-# create_project()'s own _slugify() call -- project names are short,
-# user-typed text, not derived from a long file-sourced paragraph, so
-# they were never at risk of this.
+# files). This is an ON-DISK STORAGE concern only: core.increment_matcher's
+# identity matching still compares the FULL, untruncated Record Name
+# text, exactly as before. NOT applied to create_project()'s own
+# _slugify() call -- project names are short, user-typed text, not
+# derived from a long file-sourced paragraph, so they were never at
+# risk of this.
+#
+# *** The cap below is a ceiling, not THE answer -- see
+# _increment_slug_max_length() for why a single fixed number can't be
+# right for every installation ***
+# A 100-character cap (sized for macOS's 255-byte single-PATH-COMPONENT
+# limit) was confirmed, on a real client Windows machine, to still
+# produce a TOTAL PATH over Windows' separate ~259-character MAX_PATH
+# limit -- which caps the whole path, not just one component -- once a
+# deep enough base data directory (e.g. several folders into a
+# OneDrive sync target) is added on top of it: a 114-character slug
+# plus a 127-character prefix (base dir + "projects/<slug>/increments")
+# plus "/increment.json.tmp" came to 261 characters, 2 over the
+# ~259-character point past which Windows refuses to create the file
+# (confirmed directly: the 242-character DIRECTORY create succeeded;
+# only the file inside it failed). _increment_slug_max_length()
+# computes the REAL, installation-specific budget at runtime instead
+# (bounded by the separate, FIXED _FIXED_INCREMENT_SLUG_LENGTH_CAP
+# below, not by this constant -- see that constant's own docstring for
+# why a fixed, machine-independent ceiling matters on top of the
+# per-installation one). This constant now only remains as
+# _slugify_increment()'s own default `max_length` for a caller that
+# doesn't go through the dynamic path at all.
 _MAX_INCREMENT_SLUG_LENGTH = 100
 
+# The longest relative path the app ever writes INSIDE an increment
+# folder, relative to the increment folder itself -- confirmed by
+# listing every file create_increment()/save_new_version()/
+# save_status()/comments functions write: increment.json, status.json,
+# comments.json, change_history.json (each via _write_json(), which
+# briefly creates a same-named ".tmp" sibling during its atomic write
+# -- "change_history.json.tmp" = 23 characters is the longest of
+# those), and each stored version file under its own "files/"
+# subdirectory as "files/v<N>_<YYYY-MM-DD><ext>" (the version NUMBER
+# and upload DATE only -- never the original uploaded filename; up to
+# a 3-digit version number = 26 characters). 30 leaves a little slack
+# beyond the longest of those confirmed cases without needing to be
+# exact.
+_LONGEST_RELATIVE_FILE_PATH_LENGTH = 30
 
-def _slugify_increment(name: str, project_number: Any = None) -> str:
-    """_slugify(), capped to _MAX_INCREMENT_SLUG_LENGTH for increment
-    directory names specifically -- see that constant's docstring.
+# Keeps the full worst-case path (base data dir + .../increments/ +
+# slug + the longest file inside it, see above) safely under Windows'
+# ~259-character failure point confirmed on a real client machine --
+# 240 leaves real margin on top of that, since Excel, Explorer, and
+# OneDrive are all independently known to have their own long-path
+# quirks that can bite before the raw OS limit does. Deliberately NOT
+# worked around with the \\?\ long-path prefix: that prefix itself
+# isn't reliably honored by Excel/Explorer/OneDrive either, so a
+# genuinely SHORTER path is the fix that actually holds up everywhere,
+# not just past Windows' own API.
+_TARGET_MAX_PATH_LENGTH = 240
+
+# However short _increment_slug_max_length()'s real-budget computation
+# comes out, never go below this -- enough room for a real Project #
+# (e.g. "S221919-38-00", 13 characters) plus a short, still-recognizable
+# fragment of the real name. A base data directory deep enough to push
+# the computed budget below this is pathological enough that the
+# write will likely still fail -- but it fails with the clear
+# "folder path may be too long" message (see ui/workers.py.
+# show_storage_error) either way, never silently.
+_MIN_INCREMENT_SLUG_LENGTH = 24
+
+# Reserves room for _unique_slug()'s own "-2".."-99" collision suffix,
+# so two long names that truncate to the same prefix can't overflow
+# the budget _increment_slug_max_length() already computed to be safe.
+_COLLISION_SUFFIX_RESERVE = 4
+
+# A FIXED ceiling on top of the dynamic, per-installation budget
+# (_increment_slug_max_length_for_prefix()) -- independent of how deep
+# any one machine's own base data directory happens to be nested. The
+# client's team shares one OneDrive-synced data folder across several
+# computers; without this, a brand-new increment's on-disk slug could
+# come out a DIFFERENT length (and so different text) purely because
+# of which machine happened to create it -- a shallower local
+# OneDrive/username path on one computer, a deeper one on another,
+# both pointed at the exact same shared folder. Folder names shouldn't
+# depend on incidental per-machine path depth. The dynamic budget can
+# only ever shorten the result further than this fixed cap, never
+# lengthen it past it.
+_FIXED_INCREMENT_SLUG_LENGTH_CAP = 64
+
+
+def _increment_slug_max_length_for_prefix(prefix_length: int) -> int:
+    """The actual budget arithmetic behind
+    ProjectStore._increment_slug_max_length() -- pulled out as a
+    standalone function of a plain int (not a method needing a real,
+    OS-native Path) specifically so it can be verified directly
+    against a SIMULATED Windows path length (via PureWindowsPath, on
+    any host OS, including the macOS/Linux machines this app is
+    actually developed and tested on) rather than only indirectly
+    through whatever path separator convention the DEV machine's own
+    pathlib happens to use.
+
+    Bounded above by _FIXED_INCREMENT_SLUG_LENGTH_CAP (a fixed ceiling,
+    independent of any one machine's own path depth -- see that
+    constant's own docstring for why) and below by
+    _MIN_INCREMENT_SLUG_LENGTH (see that constant's docstring).
+    """
+    budget = (
+        _TARGET_MAX_PATH_LENGTH
+        - prefix_length
+        - 2  # separator before the slug, and before the file inside it
+        - _LONGEST_RELATIVE_FILE_PATH_LENGTH
+        - _COLLISION_SUFFIX_RESERVE
+    )
+    return max(min(budget, _FIXED_INCREMENT_SLUG_LENGTH_CAP), _MIN_INCREMENT_SLUG_LENGTH)
+
+
+def _slugify_increment(name: str, project_number: Any = None, max_length: int = _MAX_INCREMENT_SLUG_LENGTH) -> str:
+    """_slugify(), capped to `max_length` for increment directory names
+    specifically -- see _MAX_INCREMENT_SLUG_LENGTH's docstring for why
+    that's a per-installation-computed value in practice (passed in by
+    create_increment() via _increment_slug_max_length()), not always
+    this function's own default.
 
     A name short enough to fit is slugified exactly as before (so every
     existing, already-short increment's directory name is completely
@@ -208,12 +317,31 @@ def _slugify_increment(name: str, project_number: Any = None) -> str:
     confirmed short -- e.g. "S221919-38-00" -- and unique per real
     project), or else a short content hash of the FULL, untruncated
     name (covers the rare case project_number itself is missing/blank).
+
+    The disambiguator (plus its separator) is carved OUT of max_length,
+    not appended on top of it -- max_length is the final result's own
+    true hard cap. The previous version of this function truncated the
+    name to its cap FIRST and only then appended "-{disambiguator}",
+    so the actual result could run up to len(disambiguator) + 1
+    characters PAST the stated cap -- confirmed as the exact root cause
+    of a real client's Windows path-length failure (a 100-character cap
+    plus a 13-character Project # disambiguator produced a 114-
+    character slug; see _MAX_INCREMENT_SLUG_LENGTH's own docstring).
     """
     base = _slugify(name)
-    if len(base) <= _MAX_INCREMENT_SLUG_LENGTH:
+    if len(base) <= max_length:
         return base
-    truncated = base[:_MAX_INCREMENT_SLUG_LENGTH].rstrip("-")
     disambiguator = _slugify(str(project_number)) if project_number else hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+    available_for_prefix = max_length - len(disambiguator) - 1  # -1: the "-" joining them
+    if available_for_prefix < 1:
+        # max_length is too small even for the disambiguator alone --
+        # only possible with a pathologically deep base data directory
+        # (see _MIN_INCREMENT_SLUG_LENGTH, which this should never
+        # actually fall below in practice). Falls back to the
+        # disambiguator by itself rather than raising -- still unique,
+        # even if no longer a recognizable fragment of the real name.
+        return disambiguator[:max(max_length, 1)]
+    truncated = base[:available_for_prefix].rstrip("-")
     return f"{truncated}-{disambiguator}"
 
 
@@ -385,6 +513,22 @@ class ProjectStore:
     def _increment_json_path(self, project_slug: str, increment_slug: str) -> Path:
         return self._increments_dir(project_slug) / increment_slug / "increment.json"
 
+    def _increment_slug_max_length(self, project_slug: str) -> int:
+        """How long a NEW increment's slug may be, computed from the
+        ACTUAL base data directory's real length at runtime -- see
+        _increment_slug_max_length_for_prefix() for the actual budget
+        arithmetic (a standalone, host-OS-independent function, so it
+        can be verified directly against a SIMULATED Windows path via
+        PureWindowsPath regardless of which OS the test runs on --
+        see tests/test_increment_path_length.py). This method's only
+        job is computing the one real, installation-specific number
+        that function needs: the length of THIS project's actual
+        ".../increments" prefix, in whatever form pathlib resolves it
+        to on the OS actually running.
+        """
+        prefix_length = len(str(self._increments_dir(project_slug)))
+        return _increment_slug_max_length_for_prefix(prefix_length)
+
     def list_increments(self, project_name: str) -> list[IncrementRecord]:
         project = self.get_project(project_name)
         if project is None:
@@ -393,16 +537,21 @@ class ProjectStore:
         for increment_dir in self._increment_dirs(project.slug):
             json_path = increment_dir / "increment.json"
             if not json_path.exists():
+                logger.warning("Skipping increment directory with no increment.json: %s", increment_dir)
                 continue
-            data = _read_json(json_path)
-            records.append(
-                IncrementRecord(
-                    name=data["name"],
-                    version=data["version"],
-                    last_updated=data["last_updated"],
-                    slug=increment_dir.name,
+            try:
+                data = _read_json(json_path)
+                records.append(
+                    IncrementRecord(
+                        name=data["name"],
+                        version=data["version"],
+                        last_updated=data["last_updated"],
+                        slug=increment_dir.name,
+                    )
                 )
-            )
+            except (json.JSONDecodeError, KeyError, OSError) as exc:
+                logger.warning("Skipping increment directory with invalid increment.json: %s (%s)", increment_dir, exc)
+                continue
         # _increment_dirs() reflects raw filesystem iterdir() order, which
         # is arbitrary (not upload order, not alphabetical) and can vary
         # by OS/filesystem -- so without this, the increment list's order
@@ -442,15 +591,33 @@ class ProjectStore:
             raise ValueError(f"Increment {increment_name!r} already exists in project {project_name!r}")
 
         taken = {d.name for d in self._increment_dirs(project.slug)}
-        slug = _unique_slug(_slugify_increment(increment_name, project_number), taken)
+        max_slug_length = self._increment_slug_max_length(project.slug)
+        slug = _unique_slug(_slugify_increment(increment_name, project_number, max_slug_length), taken)
         today = date.today().isoformat()
 
-        _write_json(
-            self._increment_json_path(project.slug, slug),
-            {"name": increment_name, "version": 1, "last_updated": today},
-        )
-        _write_json(self._status_json_path(project.slug, slug), {})
-        self._copy_version_file(project.slug, slug, source_file_path, version=1, as_of=today)
+        # If any of these three writes fails partway through (most
+        # realistically a Windows path-length OSError, but any OSError
+        # is handled the same way), the half-created folder is removed
+        # rather than left behind as an orphan with no increment.json
+        # for list_increments() to find -- see that function's own
+        # skip-and-log handling for the complementary side of this (an
+        # orphan that somehow still exists on disk, from before this
+        # cleanup existed, must never break the project's increment
+        # list). The exception itself is re-raised unchanged, for the
+        # UI layer to show as a clear "could not save" message instead
+        # of the misleading "couldn't be parsed" one a lower-level
+        # OSError used to surface as (see ui/workers.py.show_storage_error).
+        increment_dir = self._increments_dir(project.slug) / slug
+        try:
+            _write_json(
+                self._increment_json_path(project.slug, slug),
+                {"name": increment_name, "version": 1, "last_updated": today},
+            )
+            _write_json(self._status_json_path(project.slug, slug), {})
+            self._copy_version_file(project.slug, slug, source_file_path, version=1, as_of=today)
+        except OSError:
+            shutil.rmtree(increment_dir, ignore_errors=True)
+            raise
 
         return IncrementRecord(name=increment_name, version=1, last_updated=today, slug=slug)
 

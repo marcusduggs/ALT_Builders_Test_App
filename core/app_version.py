@@ -101,4 +101,9 @@ using an older template, that previously failed to load
 Excel column filters in the exported file
 - Fixed several layout issues: the increments table cutting off \
 early, narrow columns clipping their own headers, and long project \
-names overflowing their display area"""
+names overflowing their display area
+- Fixed: files with very long project names failed to upload on \
+Windows when the data folder was deeply nested
+- Clearer error message when the data folder can't be written to
+- A leftover folder from a failed upload no longer affects the \
+project list"""

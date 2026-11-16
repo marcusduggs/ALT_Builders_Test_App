@@ -63,6 +63,31 @@ class _Worker(QRunnable):
             self.signals.finished.emit(result)
 
 
+def show_storage_error(parent: QWidget, exc: Exception) -> None:
+    """The standard dialog for a filesystem write failure -- most
+    realistically a Windows OSError from a path that's too long (see
+    core.project_store's _MAX_INCREMENT_SLUG_LENGTH docstring for the
+    real client failure that prompted this), but shown for any OSError
+    regardless of cause, since "the file itself couldn't be parsed"
+    (the message a lower-level OSError used to surface as, before this
+    existed) is actively misleading for a problem that has nothing to
+    do with the uploaded file's own content.
+
+    Shared by every place that writes to the data directory, whether
+    backgrounded (passed to run_with_progress's on_error) or
+    synchronous (called directly from a UI event handler like a
+    status-toggle click or comment edit, which never go through
+    run_with_progress at all -- see ui.pages.data_view_page's status/
+    comment handlers), so the message is identical regardless of which
+    path triggered it.
+    """
+    QMessageBox.critical(
+        parent,
+        "Could Not Save",
+        f"Could not save to the data folder. The folder path may be too long.\n\n{exc}",
+    )
+
+
 def run_with_progress(
     parent: QWidget,
     message: str,

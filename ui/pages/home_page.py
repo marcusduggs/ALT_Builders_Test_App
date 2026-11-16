@@ -43,7 +43,7 @@ from ui.dialogs.review_dialog import ReviewDialog
 from ui.dialogs.update_available_dialog import UpdateAvailableDialog
 from ui.mock_data import MockDataStore
 from ui.paths import get_asset_path, get_bundled_path
-from ui.workers import run_with_progress
+from ui.workers import run_with_progress, show_storage_error
 
 logger = logging.getLogger(__name__)
 
@@ -837,13 +837,31 @@ class HomePage(QWidget):
             review = ReviewDialog(increment_name, result, parent=self)
             if review.exec() == QDialog.Accepted:
                 # File copy + small JSON write -- fast, no need to background this part.
-                self.store.confirm_update(project_name, increment_name, file_path, result)
+                # Runs synchronously on the UI thread (never goes through
+                # run_with_progress), so unlike the OSError branches below
+                # this needs its own try/except -- confirmed this was
+                # previously completely unguarded: a write failure here
+                # (e.g. the same Windows path-length OSError that
+                # prompted show_storage_error to exist) would have
+                # propagated as an unhandled exception instead of a
+                # dialog. Writing into an EXISTING increment folder, so
+                # there's no half-created directory to clean up on
+                # failure the way create_increment() has to -- the
+                # increment's prior version is simply left untouched.
+                try:
+                    self.store.confirm_update(project_name, increment_name, file_path, result)
+                except OSError as exc:
+                    show_storage_error(self, exc)
+                    return
                 self._refresh_increment_table()
                 self.on_view_data(project_name, increment_name)
             # Cancel/Discard: nothing changes, we're already back on this page.
 
         def on_error(exc):
-            QMessageBox.critical(self, "Could Not Read File", f"This file couldn't be compared:\n\n{exc}")
+            if isinstance(exc, OSError):
+                show_storage_error(self, exc)
+            else:
+                QMessageBox.critical(self, "Could Not Read File", f"This file couldn't be compared:\n\n{exc}")
 
         run_with_progress(
             self, "Comparing with current version...", self.store.simulate_comparison,
@@ -860,10 +878,23 @@ class HomePage(QWidget):
         def on_error(exc):
             if isinstance(exc, ValueError):
                 # e.g. an increment with this file's Record Name already
-                # exists in this project -- shouldn't normally happen
-                # here (match_upload() already checked), but is still a
-                # real error if it does.
+                # exists in this project (or an unrecognized grid-sheet
+                # template -- see core.excel_reader.detect_stage_count,
+                # raised earlier in the same call -- tests/
+                # test_unrecognized_template_error_dialog.py documents
+                # that coincidence) -- shouldn't normally happen here
+                # (match_upload() already checked for the duplicate-name
+                # case), but is still a real error if it does.
                 QMessageBox.warning(self, "Could Not Add Increment", str(exc))
+            elif isinstance(exc, OSError):
+                # Most realistically a Windows path-length failure --
+                # see core.project_store's _MAX_INCREMENT_SLUG_LENGTH
+                # docstring for the real client failure that prompted
+                # this branch to exist. The file itself parsed fine;
+                # saving it to disk is what failed, so this must NOT
+                # fall into the generic "couldn't be parsed" message
+                # below, which would actively mislead about the cause.
+                show_storage_error(self, exc)
             else:
                 QMessageBox.critical(self, "Could Not Read File", f"This file couldn't be parsed:\n\n{exc}")
 
