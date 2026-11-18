@@ -280,6 +280,35 @@ def _run(failures):
         if after["grand_total"] != before["grand_total"]:
             failures.append(f"4: Total (grand total) should be unchanged by a status edit, went {before['grand_total']} -> {after['grand_total']}")
 
+        # Not just the aggregate counts -- confirm the exported .xlsx
+        # shows "Done" on THAT EXACT (Index, Stage) row, and "Open"/
+        # unchanged on every OTHER row for the same Index (an edit to
+        # one stage must not bleed into that item's other stages).
+        edit_export_path = str(Path(tmp) / "totals_edit_export.xlsx")
+        excel_export.export_increment(display, edit_export_path)
+        wb_edit = openpyxl.load_workbook(edit_export_path)
+        ws_edit_sum = wb_edit["Sum Data"]
+        edited_row_statuses = {}
+        for r in range(2, ws_edit_sum.max_row + 1):
+            if str(ws_edit_sum.cell(row=r, column=excel_export.SUM_DATA_INDEX_COL).value) == str(target_row["index"]):
+                stage_val = ws_edit_sum.cell(row=r, column=excel_export.SUM_DATA_STAGE_COL).value
+                edited_row_statuses[stage_val] = ws_edit_sum.cell(row=r, column=excel_export.SUM_DATA_STATUS_COL).value
+        print(f"Exported rows for Index={target_row['index']!r} after the edit: {edited_row_statuses}")
+        if edited_row_statuses.get(target_stage) != "Done":
+            failures.append(
+                f"4: exported Sum Data row for Index={target_row['index']!r}, Stage #={target_stage} should show "
+                f"Status='Done' after the edit, got {edited_row_statuses.get(target_stage)!r}"
+            )
+        for other_stage in target_row["required_stages"]:
+            if other_stage == target_stage:
+                continue
+            expected_other_status = target_row["stage_status"].get(other_stage, "Open")
+            if edited_row_statuses.get(other_stage) != expected_other_status:
+                failures.append(
+                    f"4: editing Stage #{target_stage} on Index={target_row['index']!r} should not change its "
+                    f"Stage #{other_stage} row (expected {expected_other_status!r}), got {edited_row_statuses.get(other_stage)!r}"
+                )
+
         # ------------------------------------------------------------
         # 5 -- totals reflect a NEW file's counts/values, not stale ones
         # from a previous upload (demo_before.xlsm -> demo_after.xlsm,

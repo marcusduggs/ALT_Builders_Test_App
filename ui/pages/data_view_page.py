@@ -581,7 +581,13 @@ class DataViewPage(QWidget):
         self._refresh_report_tab()
         self._refresh_changes_tab()
         self._refresh_footer()
-        self.title_label.setText(f"{self.increment.name} — Version {self.increment.version}")
+        # display_name, not the full Record Name -- same reasoning as
+        # the initial title set in __init__ above. Missed on the
+        # version-switch path originally: switching versions via the
+        # combo re-showed the full 300-550+ character raw name here
+        # even though __init__ showed the short display_name.
+        self.title_label.setText(f"{self.increment.display_name} — Version {self.increment.version}")
+        self.title_label.setToolTip(self.increment.name)
         self.subtitle_label.setText(f"{self.project_name}  ·  Last updated {self.increment.last_updated}")
         self._update_version_notice()
 
@@ -889,7 +895,23 @@ class DataViewPage(QWidget):
         table.setWordWrap(True)
         table.verticalHeader().hide()
         table.setColumnWidth(0, 120)
-        table.setColumnWidth(1, 220)
+        # 300, not 220: this column's value is now ALWAYS
+        # Increment.display_name (same text on screen and in the
+        # export -- see Rey's TIO_Changes.xlsx "Sum Data" tab change
+        # request #1), and display_name's derived-name fallback
+        # (core.excel_reader.derive_short_display_name()) can
+        # legitimately run up to ~100 characters, not just the shorter
+        # "already obviously short" names. Measured directly (QFontMetrics
+        # against this exact table's font) across all 14 real HMR/SMR
+        # fixtures: 11 of 14 derived names fit under 300px; the 3
+        # genuine outliers (up to 589px for HMR 6C's) still elide with
+        # "…" (QTableView's default ElideRight) and recover via this
+        # item's own full-name tooltip -- the same accepted pattern
+        # Description/Approval Agency already rely on, not a new gap
+        # this column introduces. 220 was sized for a narrower sample
+        # and didn't fit even the common case (confirmed: SMR 3D's own
+        # 44-character name alone needs 283px).
+        table.setColumnWidth(1, 300)
         table.setColumnWidth(2, 90)
         table.setColumnWidth(3, 320)
         table.setColumnWidth(4, 140)

@@ -408,7 +408,11 @@ class CombinedDataViewPage(QWidget):
         table.setWordWrap(True)
         table.verticalHeader().hide()
         table.setColumnWidth(0, 120)
-        table.setColumnWidth(1, 220)
+        # 300, not 220 -- same reasoning as ui.pages.data_view_page's
+        # own identical column, see its comment there (this column's
+        # value is now always Increment.display_name, whose derived-
+        # name fallback can run up to ~100 characters).
+        table.setColumnWidth(1, 300)
         table.setColumnWidth(2, 90)
         table.setColumnWidth(3, 320)
         table.setColumnWidth(4, 140)

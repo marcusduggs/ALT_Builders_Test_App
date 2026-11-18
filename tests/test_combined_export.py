@@ -280,6 +280,51 @@ def _run(failures):
                 f"rows (no summary rows mixed in), got {len(sum_data_col_inc)}"
             )
 
+        # Not just counts -- the actual (Index, Stage #, Status) triples
+        # under each increment's own block must equal exactly what
+        # expand_sum_data_rows() produces for THAT increment's own
+        # sum_data, so a bug that merged/shuffled INC2's and INC3's row
+        # content across the block boundary (while leaving row COUNTS
+        # and the Increment-name label column correct) would still be
+        # caught.
+        SUM_INDEX_COL, SUM_STAGE_COL, SUM_STATUS_COL = (
+            excel_export.SUM_DATA_INDEX_COL, excel_export.SUM_DATA_STAGE_COL, excel_export.SUM_DATA_STATUS_COL,
+        )
+
+        def _triples_for(increment_name):
+            return sorted(
+                (
+                    str(ws_sum.cell(row=r, column=SUM_INDEX_COL).value),
+                    str(ws_sum.cell(row=r, column=SUM_STAGE_COL).value),
+                    ws_sum.cell(row=r, column=SUM_STATUS_COL).value,
+                )
+                for r in range(2, ws_sum.max_row + 1)
+                if ws_sum.cell(row=r, column=excel_export.SUM_DATA_INCREMENT_COL).value == increment_name
+            )
+
+        def _expected_triples(display):
+            return sorted(
+                (str(row["index"]), str(row["stage"]), row["status"])
+                for row in excel_reader.expand_sum_data_rows(display.sum_data)
+            )
+
+        inc2_actual_triples, inc2_expected_triples = _triples_for(inc2.name), _expected_triples(inc2_v1)
+        inc3_actual_triples, inc3_expected_triples = _triples_for(inc3.name), _expected_triples(inc3_latest)
+        print(f"INC2 Sum Data (Index, Stage #, Status) rows match expand_sum_data_rows(): {inc2_actual_triples == inc2_expected_triples}")
+        print(f"INC3 Sum Data (Index, Stage #, Status) rows match expand_sum_data_rows(): {inc3_actual_triples == inc3_expected_triples}")
+        if inc2_actual_triples != inc2_expected_triples:
+            failures.append(
+                f"1b2: INC2's exported Sum Data rows don't match expand_sum_data_rows(inc2_v1.sum_data) exactly -- "
+                f"missing={set(inc2_expected_triples) - set(inc2_actual_triples)}, "
+                f"extra={set(inc2_actual_triples) - set(inc2_expected_triples)}"
+            )
+        if inc3_actual_triples != inc3_expected_triples:
+            failures.append(
+                f"1b2: INC3's exported Sum Data rows don't match expand_sum_data_rows(inc3_latest.sum_data) exactly -- "
+                f"missing={set(inc3_expected_triples) - set(inc3_actual_triples)}, "
+                f"extra={set(inc3_actual_triples) - set(inc3_expected_triples)}"
+            )
+
         # ------------------------------------------------------------
         # 1c -- Report: two separate labeled sections, each ending in
         # its OWN "Grand Total" row, plus one final, distinctly-labeled

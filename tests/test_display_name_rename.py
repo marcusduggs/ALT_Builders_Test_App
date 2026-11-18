@@ -38,10 +38,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from PySide6.QtWidgets import QApplication
+
 from core import excel_reader
 from core.increment_matcher import MatchType
 from core.project_store import DISPLAY_NAME_MAX_LENGTH, ProjectStore, _sanitize_display_name
 from ui.mock_data import MockDataStore
+from ui.pages.data_view_page import DataViewPage
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample_increment.xlsm")
 REAL_FIXDIR = os.path.join(os.path.dirname(__file__), "fixtures", "hmr_smr_projects")
@@ -124,6 +127,41 @@ def test_renamed_increment_still_matches_and_versions(failures):
             failures.append(f"display_name must round-trip through increment.json, got {display.display_name!r}")
 
 
+def test_title_bar_shows_display_name_across_version_switch(failures):
+    """DataViewPage's title bar must show display_name both on initial
+    load (__init__) AND after switching versions via the combo
+    (_apply_new_increment) -- a prior bug had the latter path regress
+    to the full raw Record Name (300-550+ chars for real client files)
+    even though __init__ correctly showed the short display_name.
+    """
+    QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MockDataStore(ProjectStore(base_dir=Path(tmp) / "data"))
+        store.add_project("Title Bar Check")
+        prepared = store.prepare_new_increment("Title Bar Check", FIXTURE)
+        inc = store.finalize_new_increment(prepared, "Short Label")
+        display = store.get_increment_for_display("Title Bar Check", inc.name)
+
+        page = DataViewPage("Title Bar Check", display, store, on_back=lambda: None)
+        print(f"Initial title: {page.title_label.text()!r}")
+        if "Short Label" not in page.title_label.text():
+            failures.append(f"initial title should show display_name 'Short Label', got {page.title_label.text()!r}")
+        if page.title_label.toolTip() != inc.name:
+            failures.append(f"initial title tooltip should be the full real name, got {page.title_label.toolTip()!r}")
+
+        # Simulate a version switch: upload the same file again as a
+        # new version, then push that new Increment through the same
+        # path _on_row_version_changed/_apply_new_increment uses.
+        store.confirm_update("Title Bar Check", inc.name, FIXTURE, store.simulate_comparison("Title Bar Check", inc.name, FIXTURE))
+        v2_display = store.get_increment_for_display("Title Bar Check", inc.name, version=2)
+        page._apply_new_increment(v2_display)
+        print(f"After version switch: {page.title_label.text()!r}")
+        if "Short Label" not in page.title_label.text():
+            failures.append(f"after a version switch, title should still show display_name 'Short Label', got {page.title_label.text()!r} -- regressed to the raw Record Name")
+        if page.title_label.toolTip() != inc.name:
+            failures.append(f"after a version switch, title tooltip should still be the full real name, got {page.title_label.toolTip()!r}")
+
+
 def test_sanitization(failures):
     cases = [
         ("  SMR 3D  ", "SMR 3D"),
@@ -187,6 +225,7 @@ def main():
     failures = []
     test_display_name_never_affects_slug(failures)
     test_renamed_increment_still_matches_and_versions(failures)
+    test_title_bar_shows_display_name_across_version_switch(failures)
     test_sanitization(failures)
     test_blank_falls_back_to_derived_name(failures)
     test_older_increment_without_display_name_still_works(failures)

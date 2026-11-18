@@ -51,6 +51,9 @@ from ui.pages.combined_data_view_page import CombinedDataViewPage
 FIXDIR = os.path.join(os.path.dirname(__file__), "fixtures", "hmr_smr_projects")
 PROJECT_NAME = "All-Fixtures Filter Regression"
 PROJECT_COL = 0
+INDEX_COL = 2
+STAGE_COL = 5
+STATUS_COL = 6
 
 
 def _visible_rows(proxy) -> list[int]:
@@ -124,7 +127,8 @@ def main():
             app.processEvents()
 
             visible_rows = _visible_rows(proxy)
-            expected_rows = len(expand_sum_data_rows(display.sum_data))
+            expected_expanded = expand_sum_data_rows(display.sum_data)
+            expected_rows = len(expected_expanded)
             print(f"  visible rows: {len(visible_rows)} (expected {expected_rows})")
             if len(visible_rows) != expected_rows:
                 failures.append(
@@ -137,6 +141,31 @@ def main():
             ]
             if bad_rows:
                 failures.append(f"{short_name}: row(s) {bad_rows} passed the Project # filter but don't actually have that Project #")
+
+            # Not just a count/Project# check -- the actual SET of
+            # (Index, Stage #, Status) tuples visible must equal exactly
+            # what expand_sum_data_rows() produces for THIS increment's
+            # own sum_data, so a bug that shuffled another increment's
+            # row content under this Project # label (while leaving the
+            # Project # cell itself correct) would still be caught.
+            expected_triples = sorted(
+                (str(r["index"]), str(r["stage"]), r["status"]) for r in expected_expanded
+            )
+            visible_triples = sorted(
+                (
+                    str(model.data(model.index(r, INDEX_COL))),
+                    str(model.data(model.index(r, STAGE_COL))),
+                    model.data(model.index(r, STATUS_COL)),
+                )
+                for r in visible_rows
+            )
+            if visible_triples != expected_triples:
+                missing = set(expected_triples) - set(visible_triples)
+                extra = set(visible_triples) - set(expected_triples)
+                failures.append(
+                    f"{short_name}: visible (Index, Stage #, Status) rows under Project #={project_number!r} "
+                    f"don't match expand_sum_data_rows()'s own result exactly -- missing={missing}, extra={extra}"
+                )
 
             project_combo.setCurrentText("All")
             app.processEvents()

@@ -143,6 +143,44 @@ def main():
             if bad_stage_rows:
                 failures.append(f"2: found INC 8 row(s) claiming a stage past its real 2: rows {bad_stage_rows}")
 
+            # Not just counts/stage-range -- the actual SET of (Index,
+            # Stage #, Status) rows rendered for EACH increment must
+            # equal exactly expand_sum_data_rows()'s own result for that
+            # increment's sum_data, so a bug that mixed INC 8's and INC
+            # 2's row content together (while still landing on the right
+            # TOTAL count and never exceeding stage 2) would still be
+            # caught.
+            INDEX_COL = 2
+
+            def _rendered_triples(display_name):
+                return sorted(
+                    (
+                        str(model.data(model.index(r, INDEX_COL))),
+                        str(model.data(model.index(r, STAGE_COL))),
+                        model.data(model.index(r, 6)),  # Status
+                    )
+                    for r in range(model.rowCount())
+                    if model.data(model.index(r, INCREMENT_COL)) == display_name
+                )
+
+            def _expected_triples(entries):
+                return sorted((str(e["index"]), str(e["stage"]), e["status"]) for e in entries)
+
+            d8_rendered, d8_expected = _rendered_triples(d8.display_name), _expected_triples(d8_entries)
+            dsample_rendered, dsample_expected = _rendered_triples(dsample.display_name), _expected_triples(dsample_entries)
+            print(f"INC 8 rendered rows match expand_sum_data_rows(): {d8_rendered == d8_expected}")
+            print(f"INC 2 (sample) rendered rows match expand_sum_data_rows(): {dsample_rendered == dsample_expected}")
+            if d8_rendered != d8_expected:
+                failures.append(
+                    f"2: INC 8's rendered Sum Data rows don't match expand_sum_data_rows(d8.sum_data) exactly -- "
+                    f"missing={set(d8_expected) - set(d8_rendered)}, extra={set(d8_rendered) - set(d8_expected)}"
+                )
+            if dsample_rendered != dsample_expected:
+                failures.append(
+                    f"2: INC 2's rendered Sum Data rows don't match expand_sum_data_rows(dsample.sum_data) exactly -- "
+                    f"missing={set(dsample_expected) - set(dsample_rendered)}, extra={set(dsample_rendered) - set(dsample_expected)}"
+                )
+
         # ------------------------------------------------------------
         # 3 -- the sibling EXPORT path (core.combined_export) -- confirm
         # it still produces the right rows end to end against the real
@@ -182,6 +220,40 @@ def main():
         ]
         if bad_exported_stage_rows:
             failures.append(f"3: found exported INC 8 row(s) claiming a stage past its real 2: rows {bad_exported_stage_rows}")
+
+        # Same (Index, Stage #, Status) set-equality check as step 2,
+        # against the actual exported .xlsx.
+        INDEX_COL_EXPORT = excel_export.SUM_DATA_INDEX_COL
+        STATUS_COL_EXPORT = excel_export.SUM_DATA_STATUS_COL
+
+        def _exported_triples(increment_name):
+            return sorted(
+                (
+                    str(ws.cell(row=r, column=INDEX_COL_EXPORT).value),
+                    str(ws.cell(row=r, column=STAGE_COL_EXPORT).value),
+                    ws.cell(row=r, column=STATUS_COL_EXPORT).value,
+                )
+                for r in range(2, ws.max_row + 1)
+                if ws.cell(row=r, column=excel_export.SUM_DATA_INCREMENT_COL).value == increment_name
+            )
+
+        def _expected_triples(entries):
+            return sorted((str(e["index"]), str(e["stage"]), e["status"]) for e in entries)
+
+        d8_exported, d8_expected = _exported_triples(d8.display_name), _expected_triples(d8_entries)
+        dsample_exported, dsample_expected = _exported_triples(dsample.display_name), _expected_triples(dsample_entries)
+        print(f"INC 8 exported rows match expand_sum_data_rows(): {d8_exported == d8_expected}")
+        print(f"INC 2 (sample) exported rows match expand_sum_data_rows(): {dsample_exported == dsample_expected}")
+        if d8_exported != d8_expected:
+            failures.append(
+                f"3: INC 8's exported Sum Data rows don't match expand_sum_data_rows(d8.sum_data) exactly -- "
+                f"missing={set(d8_expected) - set(d8_exported)}, extra={set(d8_exported) - set(d8_expected)}"
+            )
+        if dsample_exported != dsample_expected:
+            failures.append(
+                f"3: INC 2's exported Sum Data rows don't match expand_sum_data_rows(dsample.sum_data) exactly -- "
+                f"missing={set(dsample_expected) - set(dsample_exported)}, extra={set(dsample_exported) - set(dsample_expected)}"
+            )
 
     print("\n" + "=" * 70)
     if failures:
