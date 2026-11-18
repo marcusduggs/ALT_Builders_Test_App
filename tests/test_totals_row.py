@@ -1,8 +1,16 @@
 """
-Validates the All Data / Sum Data bottom totals row: core.excel_reader's
-all_data_totals()/sum_data_totals()/live_sum_data_totals(), how they're
-surfaced on ui.mock_data.Increment, and how they're rendered in the
-exported .xlsx (core/excel_export.py).
+Validates the All Data bottom totals row (core.excel_reader.
+all_data_totals(), how it's surfaced on ui.mock_data.Increment, and how
+it's rendered in the exported .xlsx) -- and confirms Sum Data has NO
+totals row, and no Open/Done/Total/% Complete columns, at all (Rey's
+TIO_Changes.xlsx "Sum Data" tab change requests #2/#3). Sum Data used
+to have its own live-recomputed totals row (core.excel_reader.
+live_sum_data_totals(), now deleted -- it had zero remaining callers
+once both the in-app Sum Data tables and both Excel Sum Data sheets
+stopped writing one); this file now computes the same Open/Done/Total
+aggregate ITSELF, as an independent test-local oracle, purely to prove
+a live status edit is still correctly reflected per ROW (there is no
+longer an aggregate row to display it in at all).
 
 Ground truth for sample_increment.xlsm was reverse-engineered directly
 from the real file's own bottom-row formulas (data_only=False) and
@@ -12,10 +20,6 @@ cross-checked against its cached values (data_only=True):
                       (Excel's SUM() already skips "X" text, same rule
                       BlueSheetRecord.sum_value uses per row) -- SUM
                       (grand total) cached at 291.
-  Sum Data row 95:   every Stage/VCR column = COUNTIF(col4:col94,"*Open*");
-                      Open/Done/Total totals = SUM of the per-row
-                      Open/Done/Total columns; % Complete = Done/Total.
-                      Cached: Open=277, Done=189, Total=466, %=0.4056 (41%).
 
 Run directly: `python tests/test_totals_row.py`
 """
@@ -44,6 +48,39 @@ PROJECT_NAME = "Totals Row Validation"
 EXPECTED_STAGE_COUNT = 42
 
 
+def _compute_sum_data_totals(rows: list[dict]) -> dict:
+    """Test-local independent oracle -- NOT a production function
+    (core.excel_reader.live_sum_data_totals(), which this mirrors, was
+    deleted: once Sum Data stopped having any Open/Done/Total/%
+    Complete display anywhere -- see module docstring -- nothing in
+    production code needed an aggregate anymore). Walks the SAME live
+    `rows` shape (required_stages/stage_status/vcr) every Sum Data row
+    already carries.
+    """
+    open_total = done_total = 0
+    for row in rows:
+        required = row.get("required_stages", [])
+        stage_status = row.get("stage_status", {})
+        for stage in required:
+            status = stage_status.get(stage, "Open")
+            if status == "Done":
+                done_total += 1
+            else:
+                open_total += 1
+        vcr_status = excel_reader.stage_marker_status(row.get("vcr"))
+        if vcr_status == "Done":
+            done_total += 1
+        elif vcr_status == "Open":
+            open_total += 1
+    grand_total = open_total + done_total
+    return {
+        "open_total": open_total,
+        "done_total": done_total,
+        "grand_total": grand_total,
+        "pct_complete": (done_total / grand_total) if grand_total else None,
+    }
+
+
 def main():
     failures = []
 
@@ -68,8 +105,10 @@ def main():
             print(" -", f)
         raise SystemExit(1)
     else:
-        print("RESULT: PASS -- totals row correct on fresh upload, excluded from item counts, "
-              "styled/typed correctly in export, and stays live-accurate after edits and re-uploads")
+        print("RESULT: PASS -- All Data's totals row is correct on fresh upload, excluded from item counts, "
+              "styled/typed correctly in export, and stays accurate after edits and re-uploads; Sum Data has "
+              "NO totals row and NO Open/Done/Total/% Complete columns at all, on screen or in either export, "
+              "and a live status edit is still correctly reflected per row with no aggregate to display it in.")
 
 
 def _run(failures):
@@ -82,30 +121,12 @@ def _run(failures):
         display = store.get_increment_for_display(PROJECT_NAME, increment.name)
 
         # ------------------------------------------------------------
-        # 1 -- fresh upload, zero edits.
-        #
-        # All Data's row set is 1:1 with the real file (every row, no
-        # filtering), so its SUM total matches the file's own cached
-        # grand total exactly: 291.
-        #
-        # Sum Data is DIFFERENT: this app's build_sum_data() deliberately
-        # includes more rows than the real file's own static Sum Data
-        # sheet does (91 rows) -- see core/excel_reader.py's "SUM DATA IS
-        # STALE...BUG FIXED" note: the file's own Sum Data sheet wrongly
-        # excludes items with real required stages but a blank Approval
-        # Agency (C-F4 is the named example). Confirmed directly: our
-        # reconstruction has 103 rows, 12 more than the file's 91 (all 12
-        # exactly the blank-Approval-Agency category the bug fix
-        # targets). So Sum Data's totals CANNOT match the file's stale
-        # cached totals (277/189/466) -- that would mean re-introducing
-        # the bug. What's validated instead: the totals row's own
-        # arithmetic is correct for OUR (corrected) row set, cross-checked
-        # independently against the same DataFrame, and that live/raw
-        # agree with each other on a fresh upload (status.json is seeded
-        # directly from the file's raw status at upload time).
+        # 1 -- fresh upload, zero edits. All Data's row set is 1:1 with
+        # the real file (every row, no filtering), so its SUM total
+        # matches the file's own cached grand total exactly: 291.
         # ------------------------------------------------------------
         print("=" * 70)
-        print("1 -- Fresh upload: All Data matches the file exactly; Sum Data's row-count difference is by design")
+        print("1 -- Fresh upload: All Data's totals row matches the file exactly")
         print("=" * 70)
 
         all_totals = display.all_data_totals
@@ -113,32 +134,16 @@ def _run(failures):
         if all_totals.get("SUM") != 291:
             failures.append(f"1: All Data SUM total should be 291 (real file's cached grand total), got {all_totals.get('SUM')}")
 
-        parsed = excel_reader.normalize_workbook(SAMPLE)
-        sum_data_df = parsed["sum_data"]
-        print(f"Our Sum Data row count: {len(sum_data_df)} (real file's own Sum Data sheet has 91 -- by design, see above)")
-        if len(sum_data_df) != 103:
-            failures.append(f"1: fixture assumption broken -- expected our Sum Data reconstruction to have 103 rows, got {len(sum_data_df)}")
-
-        # Independent cross-check, not reusing sum_data_totals()/
-        # live_sum_data_totals() themselves -- re-derives expected
-        # Open/Done/Total straight from the parsed BlueSheetRecords
-        # instead: a stage is required using the UNCHANGED raw-marker
-        # rule (stage_marker_status(value) in ("Done","Open")), but
-        # completion for a GRID record now comes from whether its
-        # hcai_fdd_use cell is filled in, not from the marker itself --
-        # see core.excel_reader.raw_status_by_index()'s docstring (direct
-        # client correction: the "Stage N Required" marker only means a
-        # stage applies, not that it's done). F-Cons Verif (milestone)
-        # records are untouched by that correction and keep using
-        # vcr_marker_status() exactly as before.
-        #
-        # NOTE: this reads the SAME underlying records build_sum_data()
-        # does, but intentionally does NOT reuse sum_data_df's own Stage
-        # columns for the Open/Done split -- those still reflect the OLD
-        # (pre-correction) raw-marker rule on purpose, since
-        # build_sum_data() is a static, file-derived reconstruction used
-        # only for ground-truth drift comparisons, never read by the live
-        # app (see raw_totals below, step 1's last check).
+        # Independent cross-check of Sum Data's live aggregate (see
+        # _compute_sum_data_totals()'s own docstring for why this is a
+        # test-local oracle, not production code), re-derived straight
+        # from the parsed BlueSheetRecords -- a stage is required using
+        # the UNCHANGED raw-marker rule (stage_marker_status(value) in
+        # ("Done","Open")), but completion for a GRID record comes from
+        # whether its hcai_fdd_use cell is filled in, not from the
+        # marker itself (direct client correction). F-Cons Verif
+        # (milestone) records are untouched by that correction and keep
+        # using vcr_marker_status()-equivalent semantics.
         records = excel_reader.parse_workbook(SAMPLE)["records"]
         expected_open = expected_done = 0
         for rec in records:
@@ -163,52 +168,25 @@ def _run(failures):
         expected_total = expected_open + expected_done
         print(f"Independently cross-checked expected totals for OUR row set: Open={expected_open}, Done={expected_done}, Total={expected_total}")
 
-        live_totals = excel_reader.live_sum_data_totals(display.sum_data, display.stage_count)
+        live_totals = _compute_sum_data_totals(display.sum_data)
         print(f"Sum Data live totals:     Open={live_totals['open_total']}, Done={live_totals['done_total']}, "
               f"Total={live_totals['grand_total']}, %={live_totals['pct_complete']}")
         if (live_totals["open_total"], live_totals["done_total"], live_totals["grand_total"]) != (expected_open, expected_done, expected_total):
             failures.append(
-                f"1: live_sum_data_totals() should match the independent cross-check "
+                f"1: Sum Data's live aggregate should match the independent cross-check "
                 f"({expected_open}, {expected_done}, {expected_total}), got "
                 f"({live_totals['open_total']}, {live_totals['done_total']}, {live_totals['grand_total']})"
             )
         if abs(live_totals["pct_complete"] - (expected_done / expected_total)) > 1e-9:
             failures.append(f"1: Sum Data % Complete should be {expected_done}/{expected_total}, got {live_totals['pct_complete']}")
 
-        # raw-file-derived sum_data_totals() (normalize_workbook()'s own
-        # artifact, from build_sum_data()) is now EXPECTED to diverge
-        # from live_sum_data_totals() even on a fresh upload -- a direct,
-        # intentional consequence of the HCAI/FDD-Use completion-source
-        # fix: build_sum_data() is deliberately left on the OLD raw-
-        # marker rule (it's a static ground-truth-comparison artifact,
-        # never read by the live app -- see raw_status_by_index()'s
-        # docstring), while live_sum_data_totals() now uses the client-
-        # corrected rule. What's checked here is that raw_totals is
-        # STILL exactly what the old rule produces (291/227/518,
-        # confirmed via the real file's own cached Sum Data formulas in
-        # this file's own docstring) -- i.e. that this fix didn't
-        # accidentally touch build_sum_data() too, not that it matches
-        # live.
-        raw_totals = parsed["sum_data_totals"]
-        print(f"Sum Data raw-file totals: Open={raw_totals['open_total']}, Done={raw_totals['done_total']}, "
-              f"Total={raw_totals['grand_total']}")
-        if (raw_totals["open_total"], raw_totals["done_total"], raw_totals["grand_total"]) != (291, 227, 518):
-            failures.append(
-                f"1: raw sum_data_totals() (build_sum_data()'s OLD, raw-marker-driven reconstruction) "
-                f"should be unchanged at (291, 227, 518), got {raw_totals}"
-            )
-        if (live_totals["open_total"], live_totals["done_total"]) == (raw_totals["open_total"], raw_totals["done_total"]):
-            failures.append(
-                "1: live_sum_data_totals() and raw sum_data_totals() should now DIVERGE on this fixture "
-                "(live uses the corrected HCAI/FDD-Use rule, raw deliberately still uses the old marker "
-                "rule) -- if they match, either the fix regressed or this fixture assumption changed."
-            )
-
         # ------------------------------------------------------------
-        # 2 -- totals row is NOT counted as a real item anywhere
+        # 2 -- All Data's totals row is NOT counted as a real item
+        # anywhere, and NEITHER All Data nor Sum Data ever has a row
+        # with index "Totals" leaking in as real data.
         # ------------------------------------------------------------
         print("\n" + "=" * 70)
-        print("2 -- Totals row never counted as a real item")
+        print("2 -- Totals row never counted as a real item, never leaks into either row list")
         print("=" * 70)
 
         print(f"total_count: {display.total_count} (real item count -- blank/category-header rows already excluded upstream, no totals-row leakage)")
@@ -217,14 +195,16 @@ def _run(failures):
         if any(row.get("index") in (None, "", "Totals") for row in display.all_data):
             failures.append("2: no All Data row should have a blank/'Totals' index -- the totals row must not leak into all_data")
         if any(row.get("index") in (None, "", "Totals") for row in display.sum_data):
-            failures.append("2: no Sum Data row should have a blank/'Totals' index -- the totals row must not leak into sum_data")
+            failures.append("2: no Sum Data row should have a blank/'Totals' index -- Sum Data has no totals row at all, and none should leak in")
 
         # ------------------------------------------------------------
-        # 3 -- exported file: totals row present, bold, tinted, and
-        # numerically typed (not strings)
+        # 3 -- exported file: All Data's totals row present, bold,
+        # tinted, numerically typed; Sum Data has NO totals row, NO
+        # Open/Done/Total/% Complete columns, and its row count exactly
+        # matches the flat expanded list (header + data rows only).
         # ------------------------------------------------------------
         print("\n" + "=" * 70)
-        print("3 -- Exported file's totals row: values, styling, numeric types")
+        print("3 -- Exported file: All Data's totals row vs. Sum Data's lack of one")
         print("=" * 70)
 
         export_path = str(Path(tmp) / "totals_export.xlsx")
@@ -249,37 +229,35 @@ def _run(failures):
             failures.append("3: All Data exported totals row should have a fill applied")
 
         ws_sum = wb_out["Sum Data"]
-        sum_totals_row = ws_sum.max_row
-        # Sum Data is long-format now (one row per (Index, Stage), not one
-        # per item with 42 stage columns) -- its Open/Done/Total columns
-        # sit at fixed positions regardless of stage_count, see
-        # core.excel_export's SUM_DATA_* column constants.
-        open_cell = ws_sum.cell(row=sum_totals_row, column=excel_export.SUM_DATA_OPEN_COL)
-        done_cell = ws_sum.cell(row=sum_totals_row, column=excel_export.SUM_DATA_DONE_COL)
-        total_cell = ws_sum.cell(row=sum_totals_row, column=excel_export.SUM_DATA_TOTAL_COL)
-        print(f"Exported Sum Data totals row ({sum_totals_row}): Open={open_cell.value!r}, Done={done_cell.value!r}, "
-              f"Total={total_cell.value!r} (types: {type(open_cell.value).__name__}/{type(done_cell.value).__name__}/{type(total_cell.value).__name__})")
-        if (open_cell.value, done_cell.value, total_cell.value) != \
-           (live_totals["open_total"], live_totals["done_total"], live_totals["grand_total"]):
-            failures.append(
-                f"3: exported Sum Data Open/Done/Total totals should match live_sum_data_totals() "
-                f"({live_totals['open_total']}, {live_totals['done_total']}, {live_totals['grand_total']}), "
-                f"got {(open_cell.value, done_cell.value, total_cell.value)}"
-            )
-        if not all(isinstance(v, (int, float)) for v in (open_cell.value, done_cell.value, total_cell.value)):
-            failures.append("3: exported Sum Data Open/Done/Total totals should all be real numbers, not strings")
-        if not ws_sum.cell(row=sum_totals_row, column=1).font.bold:
-            failures.append("3: Sum Data exported totals row should be bold")
+        sum_header = [c.value for c in ws_sum[1]]
+        print(f"Exported Sum Data header: {sum_header}")
+        if any(h in sum_header for h in ("Open", "Done", "Total", "% Complete")):
+            failures.append(f"3: exported Sum Data should have NO Open/Done/Total/% Complete columns at all, got {sum_header}")
+
+        expected_sum_rows = len(excel_reader.expand_sum_data_rows(display.sum_data))
+        actual_sum_rows = ws_sum.max_row - 1  # minus the header row
+        print(f"Exported Sum Data row count: {actual_sum_rows} (expected {expected_sum_rows} -- no totals row to add)")
+        if actual_sum_rows != expected_sum_rows:
+            failures.append(f"3: exported Sum Data should have exactly {expected_sum_rows} rows (no totals row), got {actual_sum_rows}")
+        last_row_index_value = ws_sum.cell(row=ws_sum.max_row, column=3).value  # Index column
+        if last_row_index_value in (None, "", "Totals"):
+            failures.append(f"3: exported Sum Data's LAST row should be a real data row, not a totals row, got Index={last_row_index_value!r}")
+
+        expected_filter_range = f"A1:{openpyxl.utils.get_column_letter(excel_export.SUM_DATA_COMPLETION_DATE_COL)}{ws_sum.max_row}"
+        print(f"Sum Data AutoFilter range: {ws_sum.auto_filter.ref} (expected {expected_filter_range})")
+        if ws_sum.auto_filter.ref != expected_filter_range:
+            failures.append(f"3: Sum Data AutoFilter should cover the header through the last (real) data row, got {ws_sum.auto_filter.ref!r}")
 
         # ------------------------------------------------------------
-        # 4 -- totals row updates immediately after a live status edit,
-        # with NO re-upload / re-navigation needed
+        # 4 -- a live status edit is still correctly reflected per row
+        # immediately, with no re-upload / re-navigation needed -- even
+        # though there's no aggregate Totals row left to display it in.
         # ------------------------------------------------------------
         print("\n" + "=" * 70)
-        print("4 -- Totals row updates live after a status edit (no re-upload)")
+        print("4 -- Live status edit reflected per-row immediately (no re-upload)")
         print("=" * 70)
 
-        before = excel_reader.live_sum_data_totals(display.sum_data, display.stage_count)
+        before = _compute_sum_data_totals(display.sum_data)
         # find a currently-Open required stage on some item to flip to Done
         target_row = next(
             row for row in display.sum_data
@@ -290,7 +268,7 @@ def _run(failures):
         store.set_stage_status(PROJECT_NAME, increment.name, target_row["index"], target_stage, "Done")
         target_row["stage_status"][target_stage] = "Done"  # mirror the in-memory update the click handler makes
 
-        after = excel_reader.live_sum_data_totals(display.sum_data, display.stage_count)
+        after = _compute_sum_data_totals(display.sum_data)
         print(f"Before: Open={before['open_total']}, Done={before['done_total']}, %={before['pct_complete']:.4f}")
         print(f"After:  Open={after['open_total']}, Done={after['done_total']}, %={after['pct_complete']:.4f}")
         if after["open_total"] != before["open_total"] - 1:
@@ -316,13 +294,13 @@ def _run(failures):
         growth_increment = store.add_new_increment(growth_project, DEMO_BEFORE)
         display_before = store.get_increment_for_display(growth_project, growth_increment.name)
         totals_before = display_before.all_data_totals
-        sum_totals_before = excel_reader.live_sum_data_totals(display_before.sum_data, display_before.stage_count)
+        sum_totals_before = _compute_sum_data_totals(display_before.sum_data)
 
         result = store.simulate_comparison(growth_project, growth_increment.name, DEMO_AFTER)
         store.confirm_update(growth_project, growth_increment.name, DEMO_AFTER, result)
         display_after = store.get_increment_for_display(growth_project, growth_increment.name)
         totals_after = display_after.all_data_totals
-        sum_totals_after = excel_reader.live_sum_data_totals(display_after.sum_data, display_after.stage_count)
+        sum_totals_after = _compute_sum_data_totals(display_after.sum_data)
 
         print(f"total_count: before={display_before.total_count}, after={display_after.total_count}")
         if display_after.total_count - display_before.total_count != 3:

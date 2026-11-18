@@ -47,7 +47,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from core.excel_reader import expand_sum_data_rows, live_sum_data_totals
+from core.excel_reader import expand_sum_data_rows
 
 # Single toggle controlling All Data/Report tab-and-sheet VISIBILITY
 # across all four Sum Data surfaces (this file's export_increment,
@@ -127,10 +127,6 @@ SUM_DATA_STATUS_COL = 7
 # columns themselves.
 SUM_DATA_NOTES_COL = 8
 SUM_DATA_COMPLETION_DATE_COL = 9
-SUM_DATA_OPEN_COL = 10
-SUM_DATA_DONE_COL = 11
-SUM_DATA_TOTAL_COL = 12
-SUM_DATA_PCT_COL = 13
 
 # Changes sheet -- three stacked tables sharing one column grid (see
 # _write_changes_sheet). State Revision Log's long text (Synopsis),
@@ -300,16 +296,25 @@ def _write_all_data_sheet(
     ws.freeze_panes = ws.cell(row=2, column=STAGE_FIRST_COL).coordinate
 
 
+# "Project Name / Increment #" -- matches Rey's own TIO_Changes.xlsx
+# "Sum Data" tab header exactly (change request #1; he typed
+# "Incrament", corrected to "Increment" here). Used identically on
+# screen and in this export now (there is no more on-screen-vs-export
+# split the way there used to be between "Increment" and "Inc #").
+# Open/Done/Total/% Complete are gone entirely (change request #2), and
+# there is no bottom Totals row anymore either (change request #3) --
+# see core.combined_export's analogous SUM_DATA sheet writer for the
+# combined case, which shares this exact header list.
 SUM_DATA_HEADERS = [
-    "Project #", "Inc #", "Index", "Description", "Approval Agency",
-    "Stage #", "Status", "Notes", "Completion Date", "Open", "Done", "Total", "% Complete",
+    "Project #", "Project Name / Increment #", "Index", "Description", "Approval Agency",
+    "Stage #", "Status", "Notes", "Completion Date",
 ]
 
 
 def _write_sum_data_sheet(
     ws: Worksheet,
     rows: list[dict[str, Any]],
-    increment_name: str,
+    increment_display_name: str,
     project_number: Any,
     stage_count: int,
 ) -> None:
@@ -319,8 +324,16 @@ def _write_sum_data_sheet(
     item with no numbered stages gets exactly one row instead, Stage #
     "VCR"), each with its live status.json-backed Done/Open status (an
     unset required stage defaults to "Open" -- see that module's
-    docstring), plus one bottom Open/Done/Total/% Complete summary row --
-    NOT build_sum_data()'s own raw-file-derived status text.
+    docstring) -- NOT build_sum_data()'s own raw-file-derived status
+    text. A flat list of real rows only -- no bottom summary row.
+
+    `increment_display_name` is the SHORT display label (ui.mock_data.
+    Increment.display_name -- a user-set name or the derived short
+    name), matching the on-screen Sum Data tab's own "Project Name /
+    Increment #" column exactly -- NOT increment.name (the full,
+    sometimes 300+ character raw Record Name), which this export used
+    to pass here before this round; that was a real on-screen/export
+    parity gap, not an intentional difference.
     """
     _write_header(ws, SUM_DATA_HEADERS)
 
@@ -328,7 +341,7 @@ def _write_sum_data_sheet(
         ws.append(
             [
                 project_number,
-                increment_name,
+                increment_display_name,
                 entry["index"],
                 entry["description"] or "",
                 entry["approval_agency"] or "",
@@ -336,49 +349,17 @@ def _write_sum_data_sheet(
                 "",  # written properly below via _write_sum_data_status_cell
                 "",  # Notes -- always blank this pass, see SUM_DATA_NOTES_COL
                 "",  # Completion Date -- always blank this pass
-                "",
-                "",
-                "",
-                "",
             ]
         )
         excel_row = ws.max_row
         _apply_description_wrap(ws, excel_row, column=SUM_DATA_DESCRIPTION_COL)
         _write_sum_data_status_cell(ws, excel_row, entry["status"])
 
-    # The Totals row is always the single LAST row here (never
-    # interspersed with real data rows the way the combined export's
-    # per-increment Subtotal rows are -- see _write_combined_sum_data_
-    # sheet's own AutoFilter note), so the AutoFilter range below can
-    # simply stop one row short of it -- no need for SUBTOTAL() formulas
-    # to keep it filter-safe; a narrower range already guarantees it.
-    last_data_row = ws.max_row
-
-    # Live totals -- recomputed from these SAME rows every export (see
-    # core.excel_reader.live_sum_data_totals), never cached, so this
-    # never goes stale relative to the individual rows just written above.
-    totals = live_sum_data_totals(rows, stage_count)
-    _write_totals_row(
-        ws,
-        [
-            "", "Totals", "", "", "", "", "", "", "",
-            totals["open_total"], totals["done_total"], totals["grand_total"], totals["pct_complete"],
-        ],
-    )
-    if totals["pct_complete"] is not None:
-        ws.cell(row=ws.max_row, column=SUM_DATA_PCT_COL).number_format = "0%"
-
     # AutoFilter (real Excel column filter dropdowns, client's own
-    # reference-sheet style) over the header + real data rows ONLY --
-    # deliberately excludes the Totals row (row last_data_row + 1) so a
-    # Status/Stage filter can never hide it or evaluate its blank cells
-    # against the filter criteria. Covers every column (A through
-    # SUM_DATA_PCT_COL), not just the ones the in-app filter bar offers
-    # dropdowns for, since Excel's own AutoFilter arrows are cheap to
-    # leave available on every column and there's no reason to withhold
-    # Description/Notes/Completion Date/Open/Done/Total/% Complete from
-    # a user who wants to filter or sort by one of those instead.
-    ws.auto_filter.ref = f"A1:{get_column_letter(SUM_DATA_PCT_COL)}{last_data_row}"
+    # reference-sheet style) over the header + every data row -- the
+    # whole written sheet, since there is no summary row to exclude
+    # anymore.
+    ws.auto_filter.ref = f"A1:{get_column_letter(SUM_DATA_COMPLETION_DATE_COL)}{ws.max_row}"
 
     ws.column_dimensions[get_column_letter(SUM_DATA_PROJECT_COL)].width = 18
     ws.column_dimensions[get_column_letter(SUM_DATA_INCREMENT_COL)].width = 40
@@ -389,10 +370,6 @@ def _write_sum_data_sheet(
     ws.column_dimensions[get_column_letter(SUM_DATA_STATUS_COL)].width = 10
     ws.column_dimensions[get_column_letter(SUM_DATA_NOTES_COL)].width = 30
     ws.column_dimensions[get_column_letter(SUM_DATA_COMPLETION_DATE_COL)].width = 16
-    ws.column_dimensions[get_column_letter(SUM_DATA_OPEN_COL)].width = 9
-    ws.column_dimensions[get_column_letter(SUM_DATA_DONE_COL)].width = 9
-    ws.column_dimensions[get_column_letter(SUM_DATA_TOTAL_COL)].width = 9
-    ws.column_dimensions[get_column_letter(SUM_DATA_PCT_COL)].width = 12
     ws.freeze_panes = ws.cell(row=2, column=SUM_DATA_STAGE_COL).coordinate
 
 
@@ -651,7 +628,7 @@ def export_increment(increment: Any, path: str) -> None:
         ws_sum_data = wb.active
         ws_sum_data.title = "Sum Data"
     _write_sum_data_sheet(
-        ws_sum_data, increment.sum_data, increment.name, increment.project_number, increment.stage_count
+        ws_sum_data, increment.sum_data, increment.display_name, increment.project_number, increment.stage_count
     )
 
     if SHOW_ALL_DATA_AND_REPORT_TABS:

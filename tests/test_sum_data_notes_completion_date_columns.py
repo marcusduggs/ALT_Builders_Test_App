@@ -1,12 +1,14 @@
 """
-Regression test for the Notes/Completion Date columns added to Sum
-Data's output schema (core.excel_export.SUM_DATA_NOTES_COL,
-SUM_DATA_COMPLETION_DATE_COL) -- positioned right after Status, before
-the existing Open/Done/Total/% Complete summary columns. Scoped
-deliberately narrow for this pass: the columns exist and are ALWAYS
-blank on export -- no underlying app data feeds them, no merge/carry-
-forward/read-back logic exists yet (explicitly parked for a later
-round, see core/excel_export.py's SUM_DATA_NOTES_COL comment).
+Regression test for the Notes/Completion Date columns in Sum Data's
+output schema (core.excel_export.SUM_DATA_NOTES_COL,
+SUM_DATA_COMPLETION_DATE_COL) -- positioned right after Status, and
+now the LAST two columns (Open/Done/Total/% Complete, which used to
+follow them, are gone entirely -- Rey's TIO_Changes.xlsx "Sum Data"
+tab change request #2). Scoped deliberately narrow for this pass: the
+columns exist and are ALWAYS blank on export -- no underlying app data
+feeds them, no merge/carry-forward/read-back logic exists yet
+(explicitly parked for a later round, see core/excel_export.py's
+SUM_DATA_NOTES_COL comment).
 
 Covers both the single-increment export (core.excel_export) and the
 combined/master-sheet export (core.combined_export) against real
@@ -76,10 +78,15 @@ def main():
         ws = openpyxl.load_workbook(single_path)["Sum Data"]
         headers = [c.value for c in ws[1]]
         print(f"  Headers: {headers}")
-        expected_order = ["Status", "Notes", "Completion Date", "Open"]
+        # "Open" (and Done/Total/% Complete) no longer exist as columns
+        # at all (Rey's TIO_Changes.xlsx "Sum Data" tab change request
+        # #2) -- Completion Date is simply the LAST header now.
+        expected_order = ["Status", "Notes", "Completion Date"]
         actual_order = [h for h in headers if h in expected_order]
         if actual_order != expected_order:
             failures.append(f"1: expected column order {expected_order}, got {actual_order}")
+        if headers[-1] != "Completion Date":
+            failures.append(f"1: Completion Date should be the LAST header (no Open/Done/Total/% Complete after it), got headers ending in {headers[-1]!r}")
 
         if "Notes" not in headers or "Completion Date" not in headers:
             failures.append(f"1: expected both 'Notes' and 'Completion Date' headers, got {headers}")
@@ -111,6 +118,8 @@ def main():
         actual_order2 = [h for h in headers2 if h in expected_order]
         if actual_order2 != expected_order:
             failures.append(f"2: expected column order {expected_order}, got {actual_order2}")
+        if headers2[-1] != "Completion Date":
+            failures.append(f"2: Completion Date should be the LAST header, got headers ending in {headers2[-1]!r}")
 
         if "Notes" not in headers2 or "Completion Date" not in headers2:
             failures.append(f"2: expected both 'Notes' and 'Completion Date' headers, got {headers2}")
@@ -118,37 +127,29 @@ def main():
             notes_col2 = headers2.index("Notes") + 1
             date_col2 = headers2.index("Completion Date") + 1
             if not _all_blank(ws2, notes_col2):
-                failures.append("2: Notes column is not blank on every row of the combined export "
-                                 "(including Subtotal/Totals rows)")
+                failures.append("2: Notes column is not blank on every row of the combined export")
             if not _all_blank(ws2, date_col2):
                 failures.append("2: Completion Date column is not blank on every row of the combined export")
 
         # ------------------------------------------------------------
         # 3 -- Preview/export parity: both on-screen tables show the
-        # SAME headers in the SAME position/order as the export, with
-        # ONE known, deliberate exception -- the single-increment
-        # preview's leading identity column is labeled "Increment" (to
-        # match the combined view's own naming for the same concept,
-        # now that it displays a short derived name rather than the raw
-        # Record Name -- see core.excel_reader.derive_short_display_name),
-        # while the exported .xlsx keeps "Inc #" unchanged. Every OTHER
-        # header, including the Notes/Completion Date columns this test
-        # was written for, must still match exactly.
+        # EXACT SAME headers, in the SAME position/order, as the
+        # export -- a literal match now (the old "Inc #" export /
+        # "Increment" on-screen relabel is gone: both are "Project
+        # Name / Increment #", see Rey's TIO_Changes.xlsx "Sum Data"
+        # tab change request #1).
         # ------------------------------------------------------------
         print("\n" + "=" * 70)
-        print("3 -- Preview pages match the export (except the known 'Inc #'/'Increment' relabel)")
+        print("3 -- Preview pages match the export exactly (no more header relabel)")
         print("=" * 70)
         page = DataViewPage(PROJECT_NAME, displays[0], store, on_back=lambda: None)
         table = page.sum_data_table
         model = table.model()
         preview_headers = [model.headerData(c, Qt.Horizontal) for c in range(model.columnCount())]
         print(f"  Single preview headers: {preview_headers}")
-        expected_single_preview_headers = list(headers)
-        expected_single_preview_headers[expected_single_preview_headers.index("Inc #")] = "Increment"
-        if preview_headers != expected_single_preview_headers:
+        if preview_headers != headers:
             failures.append(
-                f"3: single-increment preview headers {preview_headers} don't match the expected "
-                f"{expected_single_preview_headers} (export headers with 'Inc #' relabeled 'Increment')"
+                f"3: single-increment preview headers {preview_headers} don't match the export's {headers}"
             )
 
         view = build_combined_view(displays)
@@ -168,8 +169,8 @@ def main():
             print(" -", f)
         raise SystemExit(1)
     else:
-        print("RESULT: PASS -- Notes/Completion Date columns appear, blank, right after Status in both the "
-              "single-increment and combined/master-sheet exports (including Subtotal/Totals rows), and both "
+        print("RESULT: PASS -- Notes/Completion Date columns appear, blank, right after Status (now the LAST "
+              "two columns) in both the single-increment and combined/master-sheet exports, and both "
               "on-screen preview pages match the exported headers exactly.")
 
 

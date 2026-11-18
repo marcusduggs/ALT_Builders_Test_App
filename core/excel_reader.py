@@ -1035,7 +1035,7 @@ def stage_marker_status(value: Any) -> Any:
     the branches above match those strings, so they fall through to
     the last line unchanged, and None hits the `in (0, None, "")`
     branch both times) -- safe to call again on a value this function
-    already produced, which live_sum_data_totals() below does.
+    already produced.
     """
     if isinstance(value, str) and value.strip().lower() == "x":
         return "Done"
@@ -1284,12 +1284,12 @@ def all_data_totals(all_data: pd.DataFrame, stage_count: int) -> dict[str, float
     VCR/SUM column, matching the real file's own formulas exactly (see
     module usage in normalize_workbook()).
 
-    Unlike Sum Data's totals (see sum_data_totals() and
-    live_sum_data_totals() below), these never depend on live
-    status.json state -- a stage's raw numeric value doesn't change when
-    its Done/Open status is toggled -- so this single, file-derived
-    computation is correct wherever it's used (in-app and export), with
-    no live variant needed.
+    Unlike Sum Data's own file-level totals (see sum_data_totals()
+    below), these never depend on live status.json state -- a stage's
+    raw numeric value doesn't change when its Done/Open status is
+    toggled -- so this single, file-derived computation is correct
+    wherever it's used (in-app and export), with no live variant
+    needed.
     """
     totals: dict[str, float] = {}
     for stage in range(1, stage_count + 1):
@@ -1313,11 +1313,12 @@ def sum_data_totals(sum_data: pd.DataFrame, stage_count: int) -> dict[str, Any]:
     status.json override -- correct immediately after a fresh upload
     (status.json is seeded directly from this same raw classification on
     first upload -- see core.status_tracker), but NOT what the app
-    actually displays/exports after a manual status edit. See
-    live_sum_data_totals() for the version that stays correct then --
-    that is the one ui.pages.data_view_page and core.excel_export
-    actually use; this one is normalize_workbook()'s own file-level
-    artifact.
+    actually displays after a manual status edit. normalize_workbook()'s
+    own file-level artifact -- not read by anything in the live
+    UI/export path (which derives its own per-row stage_status directly
+    from status.json instead -- see ui.mock_data.get_increment_for_display);
+    kept here as a faithful reconstruction of the real file's own cached
+    bottom-row formulas, same spirit as all_data_totals() above.
     """
     totals: dict[str, Any] = {}
     for stage in range(1, stage_count + 1):
@@ -1331,60 +1332,6 @@ def sum_data_totals(sum_data: pd.DataFrame, stage_count: int) -> dict[str, Any]:
     totals["grand_total"] = grand_total
     totals["pct_complete"] = (done_total / grand_total) if grand_total else None
     return totals
-
-
-def live_sum_data_totals(rows: list[dict], stage_count: int) -> dict[str, Any]:
-    """The Sum Data totals row actually rendered in-app and exported --
-    computed from the SAME live (required_stages, status.json-backed
-    stage_status) data every individual Sum Data row already renders
-    from (ui.mock_data.Increment.sum_data), so it can never go stale
-    relative to what's on screen after a manual status edit. Recomputed
-    fresh by every caller (the Sum Data tab on every render, the Excel
-    export on every export) -- never cached.
-
-    stage_count is the caller's context, not derived from `rows` --
-    a single increment's own increment.stage_count for the
-    single-increment case, or the UNION max across every selected
-    increment for the combined case (see core.combined_export), so a
-    stage with zero currently-required rows still gets a real 0 entry
-    in stage_open_counts rather than a missing key.
-
-    Mirrors sum_data_totals()'s formulas conceptually (per-stage Open
-    count, VCR Open count, Open/Done/Total sums, overall % Complete) but
-    walking live row dicts instead of the static, file-derived
-    DataFrame. Equal to sum_data_totals() immediately after a fresh
-    upload, since status.json is seeded directly from the file's own raw
-    status at that point -- see core.status_tracker.
-    """
-    stage_open_counts = {stage: 0 for stage in range(1, stage_count + 1)}
-    vcr_open_count = 0
-    open_total = 0
-    done_total = 0
-    for row in rows:
-        required = row.get("required_stages", [])
-        stage_status = row.get("stage_status", {})
-        for stage in required:
-            status = stage_status.get(stage, "Open")
-            if status == "Done":
-                done_total += 1
-            else:
-                stage_open_counts[stage] += 1
-                open_total += 1
-        vcr_status = stage_marker_status(row.get("vcr"))
-        if vcr_status == "Done":
-            done_total += 1
-        elif vcr_status == "Open":
-            vcr_open_count += 1
-            open_total += 1
-    grand_total = open_total + done_total
-    return {
-        "stage_open_counts": stage_open_counts,
-        "vcr_open_count": vcr_open_count,
-        "open_total": open_total,
-        "done_total": done_total,
-        "grand_total": grand_total,
-        "pct_complete": (done_total / grand_total) if grand_total else None,
-    }
 
 
 def expand_sum_data_rows(rows: list[dict]) -> list[dict]:
@@ -1409,9 +1356,10 @@ def expand_sum_data_rows(rows: list[dict]) -> list[dict]:
     and every row has the same shape (index, description,
     approval_agency, stage, status).
 
-    Does NOT compute Open/Done/Total aggregates -- see
-    live_sum_data_totals() for that, which still operates on the
-    original (unexpanded) `rows` list.
+    Does NOT compute any Open/Done/Total aggregate -- Sum Data has no
+    totals row of its own at all (see Rey's TIO_Changes.xlsx "Sum Data"
+    tab change request #3); this function exists purely to flatten rows
+    for display/export.
 
     Which branch a row takes is driven by its own explicit "is_milestone"
     flag -- NOT by "required_stages happens to be empty" (the earlier

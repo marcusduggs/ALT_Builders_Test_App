@@ -31,12 +31,12 @@ from PySide6.QtWidgets import (
 
 from core import app_config, combined_export, update_check
 from core.app_version import APP_VERSION
-from core.excel_reader import derive_short_display_name
 from core.increment_matcher import MatchType
 from core.project_store import ProjectStore
 from core.update_check import UpdateStatus
 from ui.dialogs.about_dialog import APP_NAME, AboutDialog
 from ui.dialogs.data_location_dialog import DataLocationDialog
+from ui.dialogs.display_name_dialog import DisplayNameDialog
 from ui.dialogs.help_dialog import HelpDialog
 from ui.dialogs.project_dialog import ProjectDialog
 from ui.dialogs.review_dialog import ReviewDialog
@@ -548,10 +548,11 @@ class HomePage(QWidget):
             checkbox_layout.addWidget(checkbox)
             self.increment_table.setCellWidget(row, 0, checkbox_container)
 
-            # Short display name, full name as tooltip -- same overflow
-            # fix as ui.pages.data_view_page's title bar/"Increment"
-            # column (see core.excel_reader.derive_short_display_name).
-            name_item = QTableWidgetItem(derive_short_display_name(increment.name))
+            # increment.display_name -- a user-set name or the derived
+            # short name (see ui.mock_data.Increment.display_name) --
+            # full name as tooltip, same overflow fix as
+            # ui.pages.data_view_page's title bar/Sum Data column.
+            name_item = QTableWidgetItem(increment.display_name)
             name_item.setToolTip(increment.name)
             self.increment_table.setItem(row, 1, name_item)
 
@@ -869,14 +870,25 @@ class HomePage(QWidget):
         )
 
     def _upload_as_new_increment(self, project_name: str, file_path: str):
-        def on_finished(increment):
-            self._refresh_increment_table()
-            QMessageBox.information(
-                self, "Increment Uploaded", f"'{increment.name}' was added as Version 1 for {project_name}."
+        # Two phases (see ui.mock_data.MockDataStore.prepare_new_increment/
+        # finalize_new_increment) so a "Project Name / Increment #"
+        # confirm/rename dialog (Rey's TIO_Changes.xlsx "Sum Data" tab
+        # change request #4) can be shown AFTER the real (slow) file
+        # parse but BEFORE anything is actually saved -- cancelling the
+        # dialog leaves no trace, same as cancelling the file picker
+        # itself would.
+        def on_prepared(prepared):
+            project = self.store.get_project(project_name)
+            existing_display_names = [inc.display_name for inc in (project.increments if project else [])]
+            dialog = DisplayNameDialog(
+                prepared["record_name"], prepared["derived_display_name"], existing_display_names, parent=self
             )
+            if dialog.exec() != QDialog.Accepted:
+                return  # cancelled -- nothing was ever written
 
-        def on_error(exc):
-            if isinstance(exc, ValueError):
+            try:
+                increment = self.store.finalize_new_increment(prepared, dialog.value())
+            except ValueError as exc:
                 # e.g. an increment with this file's Record Name already
                 # exists in this project (or an unrecognized grid-sheet
                 # template -- see core.excel_reader.detect_stage_count,
@@ -886,7 +898,8 @@ class HomePage(QWidget):
                 # (match_upload() already checked for the duplicate-name
                 # case), but is still a real error if it does.
                 QMessageBox.warning(self, "Could Not Add Increment", str(exc))
-            elif isinstance(exc, OSError):
+                return
+            except OSError as exc:
                 # Most realistically a Windows path-length failure --
                 # see core.project_store's _MAX_INCREMENT_SLUG_LENGTH
                 # docstring for the real client failure that prompted
@@ -895,10 +908,18 @@ class HomePage(QWidget):
                 # fall into the generic "couldn't be parsed" message
                 # below, which would actively mislead about the cause.
                 show_storage_error(self, exc)
-            else:
-                QMessageBox.critical(self, "Could Not Read File", f"This file couldn't be parsed:\n\n{exc}")
+                return
+
+            self._refresh_increment_table()
+            QMessageBox.information(
+                self, "Increment Uploaded",
+                f"'{increment.display_name}' was added as Version 1 for {project_name}.",
+            )
+
+        def on_error(exc):
+            QMessageBox.critical(self, "Could Not Read File", f"This file couldn't be parsed:\n\n{exc}")
 
         run_with_progress(
-            self, "Reading file...", self.store.add_new_increment,
-            on_finished, on_error, project_name, file_path,
+            self, "Reading file...", self.store.prepare_new_increment,
+            on_prepared, on_error, project_name, file_path,
         )

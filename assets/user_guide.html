@@ -57,21 +57,24 @@
 <p>You don't need to tell the app whether this is a brand-new increment or an update to one you already have — it figures that out on its own by reading the increment's name directly from the file.</p>
 <h2>What Happens Automatically</h2>
 <ul>
-<li>New increment: if the name in the file doesn't match anything already in the project, the app creates a new increment. Since there's nothing to compare it to yet, it simply confirms the upload and takes you straight to the data view.</li>
+<li>New increment: if the name in the file doesn't match anything already in the project, the app creates a new increment. Since there's nothing to compare it to yet, it asks you to confirm a short name for it first (see below), then takes you straight to the data view.</li>
 <li>Update to an existing increment: if the name matches one you already have, the app treats this as an update and shows you the review screen (below) before anything is saved.</li>
 <li>Not sure: if the name looks very similar to one you already have but isn't an exact match (for example, a small spelling or punctuation difference from the state), the app will ask you directly: is this an update to the existing one, or a new increment? Just pick whichever is correct.</li>
 </ul>
 <table class="tip"><tr><td><b>Note</b><br/>Every file you upload is saved automatically and never overwritten. Older versions are always kept, so nothing is ever lost.</td></tr></table>
+<h2>Naming a New Increment</h2>
+<p>For a brand-new increment, the app shows you a small dialog with a "Project Name / Increment #" field, pre-filled with a short name it derived from the file. You can leave it as-is or type your own — for example, a short nickname your team already uses, like "SMR 3D". This name is purely a label: it's what shows up in the Increments list, the Sum Data "Project Name / Increment #" column, and every export, but it has no effect on how the app matches or versions the file — that's still based on the file's own real record name, unchanged.</p>
+<p>If you leave the field blank, the app falls back to the derived name. You can reuse the same name for more than one increment if you want to — the app will let you know, but it won't stop you.</p>
 <h1>Understanding the Report Tabs</h1>
 <p>Once a file is loaded, you'll see four tabs at the top of the data view:</p>
 <ul>
 <li>All Data — every item from the state's file, laid out in one flat table.</li>
-<li>Sum Data — the same items, showing which stages are marked Done or Open, along with a percent-complete column for each item.</li>
+<li>Sum Data — the same items, one row per required stage, showing its Done or Open status.</li>
 <li>Report — a summary, grouped by agency, with a grand total at the bottom.</li>
 <li>Changes — see below.</li>
 </ul>
 <p>These are the same reports you used to build by hand — the app just builds them for you, every time, from whatever file you upload.</p>
-<p>All Data and Sum Data each end with a bold totals row, summarizing every column above it — the same convention your original spreadsheets have used.</p>
+<p>All Data ends with a bold totals row, summarizing every column above it — the same convention your original spreadsheets have used. Sum Data doesn't have a totals row — it's a plain list of items, matching your own reference sheet.</p>
 <h1>The Changes Tab</h1>
 <p>This tab has two sections, shown one below the other:</p>
 <h2>State Revision Log</h2>
@@ -120,7 +123,8 @@
 </ul>
 <p>The combined file has the same four tabs as a normal export, with a few differences:</p>
 <ul>
-<li>All Data and Sum Data list every selected increment's items one after another, with a new Increment column on the left so you can always tell which increment each row came from. A subtotal row appears after each increment's items, followed by one overall Grand Total at the very end — the same subtotal-then-grand-total pattern Report already uses.</li>
+<li>All Data lists every selected increment's items one after another, with a new Increment column on the left so you can always tell which increment each row came from. A subtotal row appears after each increment's items, followed by one overall Grand Total at the very end — the same subtotal-then-grand-total pattern Report already uses.</li>
+<li>Sum Data lists every selected increment's items the same way, with a "Project Name / Increment #" column on the left identifying each row — but as a plain list, with no subtotal or grand total rows.</li>
 <li>Report shows each increment's totals as its own separate section, followed by one overall Grand Total at the very end covering everything combined.</li>
 <li>Changes lists every selected increment's revision log and update history one after another, also with an Increment column — so you can sort or filter it in Excel however you like.</li>
 </ul>

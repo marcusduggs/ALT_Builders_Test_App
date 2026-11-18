@@ -59,9 +59,11 @@ def main():
     else:
         print("RESULT: PASS -- combined All Data/Sum Data/Report/Changes all correct: on-screen order, Increment "
               "column, non-latest version honored, exactly one distinctly-labeled overall Grand Total, "
-              "Changes' flattened (not sectioned) State Revision Log/Update History tables both correct, and "
-              "All Data/Sum Data's per-increment subtotal rows are contiguous, exactly match each increment's own "
-              "independent single-increment totals, and leave the final Grand Total unchanged")
+              "Changes' flattened (not sectioned) State Revision Log/Update History tables both correct; "
+              "All Data's per-increment subtotal rows are contiguous, exactly match each increment's own "
+              "independent single-increment totals, and leave the final Grand Total unchanged; Sum Data has "
+              "no Subtotal/Totals rows at all and no Open/Done/Total/% Complete columns, with every increment's "
+              "full row count accounted for")
 
 
 def _run(failures):
@@ -162,17 +164,29 @@ def _run(failures):
         # ------------------------------------------------------------
         ws_sum = wb["Sum Data"]
         sum_header = [c.value for c in ws_sum[1]]
-        if sum_header[0] != "Project #" or sum_header[1] != "Increment":
-            failures.append(f"1b: Sum Data's first two columns should be ['Project #', 'Increment'], got {sum_header[:2]!r}")
+        if sum_header[0] != "Project #" or sum_header[1] != "Project Name / Increment #":
+            failures.append(
+                f"1b: Sum Data's first two columns should be ['Project #', 'Project Name / Increment #'], "
+                f"got {sum_header[:2]!r}"
+            )
+        # Sum Data has NO Subtotal/Totals rows at all anymore (Rey's
+        # TIO_Changes.xlsx "Sum Data" tab change request #3), so EVERY
+        # row (including the last one -- unlike All Data above, there's
+        # no summary row to exclude) is a real data row.
         sum_increment_values = [
-            ws_sum.cell(row=r, column=excel_export.SUM_DATA_INCREMENT_COL).value for r in range(2, ws_sum.max_row)
+            ws_sum.cell(row=r, column=excel_export.SUM_DATA_INCREMENT_COL).value for r in range(2, ws_sum.max_row + 1)
         ]
-        # order already thoroughly checked via All Data above -- Sum Data
-        # is built from the same per-increment iteration, so just confirm
-        # both increments' rows actually made it into this sheet too.
+        # The column now shows display_name (ui.mock_data.Increment.
+        # display_name), not the raw increment.name -- identical for
+        # these two fixtures' names specifically (both already short
+        # enough that derive_short_display_name() returns them
+        # unchanged), so comparing against inc2.name/inc3.name directly
+        # is still a valid, non-coincidental check here.
         print(f"Sum Data rows use INC2 name: {inc2.name in sum_increment_values}, INC3 name: {inc3.name in sum_increment_values}")
         if inc2.name not in sum_increment_values or inc3.name not in sum_increment_values:
             failures.append("1b: Sum Data should contain rows from both increments")
+        if "Open" in sum_header or "Done" in sum_header or "Total" in sum_header or "% Complete" in sum_header:
+            failures.append(f"1b: Sum Data should no longer have Open/Done/Total/% Complete columns at all, got header {sum_header!r}")
 
         # ------------------------------------------------------------
         # 1b2 -- All Data/Sum Data per-increment SUBTOTAL rows: exactly
@@ -233,45 +247,37 @@ def _run(failures):
                 f"got {actual_all_data_grand_total_sum}"
             )
 
-        # Same contiguity + correctness check for Sum Data -- long-format
-        # now (one row per (Index, Stage), not per item), so this reads
-        # the Increment column at its own fixed position
-        # (core.excel_export.SUM_DATA_INCREMENT_COL) and the Total
-        # column at SUM_DATA_TOTAL_COL, not stage-count-dependent offsets.
+        # Sum Data: NO Subtotal/Totals rows at all (Rey's TIO_Changes.xlsx
+        # "Sum Data" tab change request #3) -- confirm neither subtotal
+        # label text appears anywhere, and the row count exactly matches
+        # the flat per-increment expand_sum_data_rows() count, with no
+        # rows lost, duplicated, or injected between the two increments'
+        # blocks.
         sum_data_col_inc = [
             ws_sum.cell(row=r, column=excel_export.SUM_DATA_INCREMENT_COL).value
             for r in range(2, ws_sum.max_row + 1)
         ]
-        inc2_sum_subtotal_idx = sum_data_col_inc.index(inc2_subtotal_label) if inc2_subtotal_label in sum_data_col_inc else None
-        print(f"INC2 Sum Data subtotal row found at offset {inc2_sum_subtotal_idx}")
-        if inc2_sum_subtotal_idx is None:
-            failures.append(f"1b2: no Sum Data subtotal row found for INC2 ({inc2_subtotal_label!r})")
-        else:
-            if sum_data_col_inc[inc2_sum_subtotal_idx - 1] != inc2.name:
-                failures.append("1b2: Sum Data INC2 subtotal row is not immediately preceded by an INC2 real row")
-            if sum_data_col_inc[inc2_sum_subtotal_idx + 1] != inc3.name:
-                failures.append("1b2: Sum Data INC2 subtotal row is not immediately followed by INC3's first real row")
+        if inc2_subtotal_label in sum_data_col_inc or inc3_subtotal_label in sum_data_col_inc:
+            failures.append("1b2: Sum Data must have NO Subtotal rows at all, found one")
+        if "Totals" in sum_data_col_inc:
+            failures.append("1b2: Sum Data must have NO Totals row at all, found one")
 
-            inc2_sum_ground_truth = excel_reader.live_sum_data_totals(inc2_v1.sum_data, inc2_v1.stage_count)
-            excel_row = inc2_sum_subtotal_idx + 2
-            actual_grand_total = ws_sum.cell(row=excel_row, column=excel_export.SUM_DATA_TOTAL_COL).value
-            print(f"INC2 Sum Data subtotal grand_total={actual_grand_total} vs ground truth={inc2_sum_ground_truth['grand_total']}")
-            if actual_grand_total != inc2_sum_ground_truth["grand_total"]:
-                failures.append(
-                    f"1b2: INC2's Sum Data subtotal row's grand_total does NOT match "
-                    f"excel_reader.live_sum_data_totals(inc2_v1.sum_data, inc2_v1.stage_count) -- got {actual_grand_total}, "
-                    f"expected {inc2_sum_ground_truth['grand_total']}"
-                )
-
-        expected_sum_data_grand_total = (
-            excel_reader.live_sum_data_totals(inc2_v1.sum_data, inc2_v1.stage_count)["grand_total"]
-            + excel_reader.live_sum_data_totals(inc3_latest.sum_data, inc3_latest.stage_count)["grand_total"]
+        expected_inc2_sum_rows = len(excel_reader.expand_sum_data_rows(inc2_v1.sum_data))
+        expected_inc3_sum_rows = len(excel_reader.expand_sum_data_rows(inc3_latest.sum_data))
+        actual_inc2_sum_rows = sum(1 for v in sum_data_col_inc if v == inc2.name)
+        actual_inc3_sum_rows = sum(1 for v in sum_data_col_inc if v == inc3.name)
+        print(
+            f"Sum Data row counts -- INC2: {actual_inc2_sum_rows} (expected {expected_inc2_sum_rows}), "
+            f"INC3: {actual_inc3_sum_rows} (expected {expected_inc3_sum_rows}), total rows: {len(sum_data_col_inc)}"
         )
-        actual_sum_data_grand_total = ws_sum.cell(row=ws_sum.max_row, column=excel_export.SUM_DATA_TOTAL_COL).value
-        print(f"Sum Data Grand Total: {actual_sum_data_grand_total} (expected {expected_sum_data_grand_total})")
-        if actual_sum_data_grand_total != expected_sum_data_grand_total:
+        if actual_inc2_sum_rows != expected_inc2_sum_rows:
+            failures.append(f"1b2: expected {expected_inc2_sum_rows} INC2 Sum Data rows, got {actual_inc2_sum_rows}")
+        if actual_inc3_sum_rows != expected_inc3_sum_rows:
+            failures.append(f"1b2: expected {expected_inc3_sum_rows} INC3 Sum Data rows, got {actual_inc3_sum_rows}")
+        if len(sum_data_col_inc) != expected_inc2_sum_rows + expected_inc3_sum_rows:
             failures.append(
-                f"1b2: Sum Data Grand Total should be {expected_sum_data_grand_total}, got {actual_sum_data_grand_total}"
+                f"1b2: Sum Data sheet should have exactly {expected_inc2_sum_rows + expected_inc3_sum_rows} total "
+                f"rows (no summary rows mixed in), got {len(sum_data_col_inc)}"
             )
 
         # ------------------------------------------------------------

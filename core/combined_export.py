@@ -14,21 +14,26 @@ they're already looking at top to bottom), with a new "Increment"
 column prepended identifying which increment each row came from. This
 resurrects the real source template's own Inc# column, which this app
 has never populated until now since it only ever handled one increment
-at a time. Immediately after each increment's own block of rows, a
+at a time.
+
+All Data: immediately after each increment's own block of rows, a
 per-increment SUBTOTAL row -- computed by calling the exact same
-single-increment totals functions (core.excel_reader.all_data_totals/
-live_sum_data_totals) once per increment, not a new calculation, see
-build_combined_all_data_rows/build_combined_sum_data_rows -- styled
-distinctly (bold + a light tint) from both regular rows and the final
-Grand Total. One combined GRAND total row at the very bottom, same
-convention as core.excel_export's single-increment totals row,
-covering every included increment together, completely UNCHANGED by
-the addition of subtotals (see combine_all_data_totals -- summing each
-increment's own already-computed totals is equivalent to, and simpler
-than, recomputing from raw combined rows -- and real_rows(), which
+single-increment totals function (core.excel_reader.all_data_totals)
+once per increment, not a new calculation, see
+build_combined_all_data_rows -- styled distinctly (bold + a light
+tint) from both regular rows and the final Grand Total. One combined
+GRAND total row at the very bottom, same convention as
+core.excel_export's single-increment totals row, covering every
+included increment together, completely UNCHANGED by the addition of
+subtotals (see combine_all_data_totals -- summing each increment's own
+already-computed totals is equivalent to, and simpler than,
+recomputing from raw combined rows -- and real_rows(), which
 per-increment subtotal marker rows are filtered out by before any
-grand-total recomputation from a flat row list, e.g. Sum Data's live
-totals).
+grand-total recomputation from a flat row list).
+
+Sum Data: a flat list of real rows only -- no per-increment Subtotal
+row and no final Totals row at all (Rey's TIO_Changes.xlsx "Sum Data"
+tab change request #3 -- see build_combined_sum_data_rows).
 
 Report: each selected increment's existing grouped/totaled Report,
 completely unchanged (including its own per-increment "Grand Total"
@@ -115,10 +120,6 @@ from core.excel_export import (
     SUM_DATA_STATUS_COL,
     SUM_DATA_NOTES_COL,
     SUM_DATA_COMPLETION_DATE_COL,
-    SUM_DATA_OPEN_COL,
-    SUM_DATA_DONE_COL,
-    SUM_DATA_TOTAL_COL,
-    SUM_DATA_PCT_COL,
     _apply_description_wrap,
     _format_changes_date,
     _history_entry_detail_text,
@@ -126,7 +127,7 @@ from core.excel_export import (
     _write_sum_data_status_cell,
     _wrapped_row_height,
 )
-from core.excel_reader import expand_sum_data_rows, live_sum_data_totals
+from core.excel_reader import expand_sum_data_rows
 
 INCREMENT_COL = 1
 INDEX_COL = 2
@@ -239,33 +240,6 @@ def combine_all_data_totals(increments: list[Any], stage_count: int) -> dict[str
     return combined
 
 
-def combine_sum_data_totals(increments: list[Any]) -> dict[str, Any]:
-    """Sums each increment's OWN already-computed live_sum_data_totals()
-    result together -- same reuse-not-recompute approach as
-    combine_all_data_totals() above. Sum Data's combined row list is
-    flattened per (increment, index, stage) (see
-    build_combined_sum_data_rows), which has no single "is this item
-    Done" concept to recompute an overall total from directly the way
-    All Data's wide per-item rows do -- so this sums each increment's own
-    open_total/done_total instead, exactly like each increment's own
-    subtotal row already does, just added together rather than shown
-    separately.
-    """
-    open_total = 0
-    done_total = 0
-    for increment in increments:
-        totals = live_sum_data_totals(increment.sum_data, increment.stage_count)
-        open_total += totals["open_total"]
-        done_total += totals["done_total"]
-    grand_total = open_total + done_total
-    return {
-        "open_total": open_total,
-        "done_total": done_total,
-        "grand_total": grand_total,
-        "pct_complete": (done_total / grand_total) if grand_total else None,
-    }
-
-
 def real_rows(rows: list[dict]) -> list[dict]:
     """Filters out per-increment subtotal marker rows (is_subtotal=True),
     leaving only genuine data rows -- for any caller that needs to walk
@@ -313,20 +287,17 @@ def build_combined_sum_data_rows(increments: list[Any]) -> list[dict]:
     per (increment, index, stage) via core.excel_reader.expand_sum_data_rows
     (one row per required stage, or one "VCR" row for an F-Cons
     Verif/milestone item with none -- see that function's docstring),
-    each real row additionally carrying "project_number" (that
-    increment's own, for the Project # column) so nothing consuming this
-    list needs the Increment list itself to look that value up.
+    each row additionally carrying "project_number" and "display_name"
+    (that increment's own, for the Project # and Project Name /
+    Increment # columns) so nothing consuming this list needs the
+    Increment list itself to look those values up.
 
-    Each SUBTOTAL marker row's "subtotal_totals" is
-    core.excel_reader.live_sum_data_totals() called on that ONE
-    increment's own raw increment.sum_data list -- the exact same
-    function the combined Grand Total (and the single-increment Sum
-    Data tab) already calls, just scoped to one increment at a time
-    instead of the flattened combined list, per the module docstring's
-    reuse guarantee. Use real_rows() before calling
-    live_sum_data_totals() on this function's own output for an OVERALL
-    total -- these marker rows would otherwise sit alongside real ones
-    in the same flat list.
+    A flat list of real rows ONLY -- no Subtotal/Totals marker rows of
+    any kind (see Rey's TIO_Changes.xlsx "Sum Data" tab change request
+    #3: "Remove Subtotals, and Total"). Unlike
+    build_combined_all_data_rows(), there is no "is_subtotal" key here
+    at all, and no real_rows()-style filtering is ever needed on this
+    function's own output.
     """
     rows = []
     for increment in increments:
@@ -334,19 +305,11 @@ def build_combined_sum_data_rows(increments: list[Any]) -> list[dict]:
             rows.append(
                 {
                     "increment": increment.name,
+                    "display_name": increment.display_name,
                     "project_number": increment.project_number,
-                    "is_subtotal": False,
                     **entry,
                 }
             )
-        rows.append(
-            {
-                "increment": increment.name,
-                "project_number": increment.project_number,
-                "is_subtotal": True,
-                "subtotal_totals": live_sum_data_totals(increment.sum_data, increment.stage_count),
-            }
-        )
     return rows
 
 
@@ -519,53 +482,25 @@ def _write_combined_all_data_sheet(ws: Worksheet, increments: list[Any], stage_c
     ws.freeze_panes = ws.cell(row=2, column=STAGE_FIRST_COL).coordinate
 
 
-def _write_sum_data_subtotal_row(ws: Worksheet, row_data: dict) -> None:
-    """One increment's own subtotal row -- same bold + light-tint
-    treatment as _write_all_data_subtotal_row. "subtotal_totals" is
-    core.excel_reader.live_sum_data_totals() called on that increment's
-    own raw sum_data list -- see build_combined_sum_data_rows. Project #
-    is left blank here, same "sentinel string is the only non-blank
-    leading column" convention every other totals/subtotal row in this
-    app already follows.
-    """
-    totals = row_data["subtotal_totals"]
-    values = [
-        "", f"{row_data['increment']} — Subtotal", "", "", "", "", "", "", "",
-        totals["open_total"], totals["done_total"], totals["grand_total"], totals["pct_complete"],
-    ]
-    ws.append(values)
-    excel_row = ws.max_row
-    for cell in ws[excel_row]:
-        cell.font = _SUBTOTAL_FONT
-        cell.fill = _SUBTOTAL_FILL
-        if cell.column > SUM_DATA_DESCRIPTION_COL:
-            cell.alignment = _STAGE_ALIGNMENT
-    if totals["pct_complete"] is not None:
-        ws.cell(row=excel_row, column=SUM_DATA_PCT_COL).number_format = "0%"
-
-
 def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None:
     """One row per (increment, Index, Stage) actually required for that
     item (see core.excel_reader.expand_sum_data_rows and
-    build_combined_sum_data_rows), with a per-increment Subtotal row
-    immediately after each increment's own block, and one final overall
-    Totals row -- same column layout as core.excel_export's
-    single-increment Sum Data sheet (SUM_DATA_HEADERS), just with "Inc #"
-    relabeled "Increment".
+    build_combined_sum_data_rows) -- a flat list of real rows only, no
+    Subtotal or Totals rows at all (Rey's TIO_Changes.xlsx "Sum Data"
+    tab change request #3) -- same column layout as core.excel_export's
+    single-increment Sum Data sheet (SUM_DATA_HEADERS), just with
+    "Project Name / Increment #" relabeled for the combined case's own
+    per-row increment identity (same text either way, per change
+    request #1 -- there is no actual relabeling left to do here anymore,
+    unlike before Subtotal rows existed to blank out).
     """
-    headers = list(SUM_DATA_HEADERS)
-    headers[1] = "Increment"
-    _write_header(ws, headers)
+    _write_header(ws, SUM_DATA_HEADERS)
 
     for row_data in build_combined_sum_data_rows(increments):
-        if row_data["is_subtotal"]:
-            _write_sum_data_subtotal_row(ws, row_data)
-            continue
-
         ws.append(
             [
                 row_data.get("project_number"),
-                row_data["increment"],
+                row_data["display_name"],
                 row_data.get("index"),
                 row_data.get("description") or "",
                 row_data.get("approval_agency") or "",
@@ -573,84 +508,17 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
                 "",  # written properly below via _write_sum_data_status_cell
                 "",  # Notes -- always blank this pass, see SUM_DATA_NOTES_COL
                 "",  # Completion Date -- always blank this pass
-                "",
-                "",
-                "",
-                "",
             ]
         )
         excel_row = ws.max_row
         _apply_description_wrap(ws, excel_row, column=SUM_DATA_DESCRIPTION_COL)
         _write_sum_data_status_cell(ws, excel_row, row_data.get("status"))
 
-    # Last row before the final Totals row is appended below -- i.e.
-    # the last per-increment Subtotal row (every increment's own block
-    # ends with one) -- used to keep the AutoFilter range below from
-    # including the Totals row, the same exclusion _write_sum_data_
-    # sheet() already does for the single-increment export.
-    last_row_before_totals = ws.max_row
-
-    # Live GRAND total across ALL selected increments together --
-    # recomputed fresh every export, same as the single-increment case,
-    # and UNCHANGED by the addition of per-increment subtotals above:
-    # combine_sum_data_totals() sums each increment's OWN totals
-    # directly, never derived from the flattened row list this loop just
-    # walked, so a subtotal row can never double-count into it.
-    totals = combine_sum_data_totals(increments)
-    _write_totals_row(
-        ws,
-        [
-            "", "Totals", "", "", "", "", "", "", "",
-            totals["open_total"], totals["done_total"], totals["grand_total"], totals["pct_complete"],
-        ],
-    )
-    if totals["pct_complete"] is not None:
-        ws.cell(row=ws.max_row, column=SUM_DATA_PCT_COL).number_format = "0%"
-
-    # AutoFilter: the per-increment Subtotal rows here are PHYSICALLY
-    # INTERSPERSED between each increment's own data block and the
-    # next -- an Excel AutoFilter ref is always one contiguous range,
-    # so there is no way to define a single range that covers every
-    # real data row while excluding every Subtotal row sitting between
-    # them. Those stay inside the range, unavoidably.
-    #
-    # The final overall Totals row is NOT subject to that same
-    # constraint, though -- it's always the single last row, never
-    # interspersed with anything after it -- so, same as the single-
-    # increment export's own AutoFilter, the range stops one row short
-    # of it (last_row_before_totals, captured above) rather than
-    # including it. That row is therefore structurally immune to being
-    # hidden or evaluated against filter criteria, the same guarantee
-    # the single-increment Totals row already has.
-    #
-    # The per-increment Subtotal rows don't get that guarantee: a
-    # Status or Stage # filter CAN hide one of them (its own cell in
-    # that column is blank, so it won't match a specific value) --
-    # an inherent consequence of interspersing summary rows with
-    # filterable data under Excel's AutoFilter model, not something
-    # fixable by a formula choice. The OTHER half of that same risk --
-    # a Subtotal row "showing out of context" if it stayed visible
-    # under a different filter with a stale, now-misleading number --
-    # is deliberately NOT addressed by switching Open/Done/Total/%
-    # Complete to SUBTOTAL(109, ...) formulas: investigated and
-    # rejected, because those four columns are blank on every REAL row
-    # (see the loop above -- only Status is ever written per real row;
-    # Open/Done/Total/% only ever appear on a Subtotal/Totals row).
-    # SUBTOTAL(109, ...) sums NUMERIC cells in a range, so pointed at a
-    # range of blank real-row cells it would just return 0 -- silently
-    # wrong, not a real fix. Making it work would mean writing a visible
-    # 0/1 Open/Done indicator into every real row's currently-blank
-    # trailing columns, a much bigger, user-visible content change
-    # nobody asked for, not a formula swap. Instead, Subtotal values
-    # stay static (the SAME "always reflects the full dataset" choice
-    # made for the in-app Subtotal/Totals rows, for the same reason: a
-    # stale-but-correct full total is a materially smaller risk than a
-    # silently-recalculated one) -- so if a Subtotal row DOES stay
-    # visible under some other active filter (e.g. one on Index or
-    # Approval Agency, both also blank on these rows), its number is
-    # always the real, full total for that increment, never a
-    # misleadingly shrunk one.
-    ws.auto_filter.ref = f"A1:{get_column_letter(SUM_DATA_PCT_COL)}{last_row_before_totals}"
+    # AutoFilter covers the header through the last data row -- every
+    # row here is a real data row now (no Subtotal/Totals rows to work
+    # around), so unlike before, the range can simply be the whole
+    # written sheet.
+    ws.auto_filter.ref = f"A1:{get_column_letter(SUM_DATA_COMPLETION_DATE_COL)}{ws.max_row}"
 
     ws.column_dimensions[get_column_letter(SUM_DATA_PROJECT_COL)].width = 18
     ws.column_dimensions[get_column_letter(SUM_DATA_INCREMENT_COL)].width = 40
@@ -661,10 +529,6 @@ def _write_combined_sum_data_sheet(ws: Worksheet, increments: list[Any]) -> None
     ws.column_dimensions[get_column_letter(SUM_DATA_STATUS_COL)].width = 10
     ws.column_dimensions[get_column_letter(SUM_DATA_NOTES_COL)].width = 30
     ws.column_dimensions[get_column_letter(SUM_DATA_COMPLETION_DATE_COL)].width = 16
-    ws.column_dimensions[get_column_letter(SUM_DATA_OPEN_COL)].width = 9
-    ws.column_dimensions[get_column_letter(SUM_DATA_DONE_COL)].width = 9
-    ws.column_dimensions[get_column_letter(SUM_DATA_TOTAL_COL)].width = 9
-    ws.column_dimensions[get_column_letter(SUM_DATA_PCT_COL)].width = 12
     ws.freeze_panes = ws.cell(row=2, column=SUM_DATA_STAGE_COL).coordinate
 
 

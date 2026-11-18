@@ -225,14 +225,18 @@ def _run(failures):
         # instead of the first stage column (core.excel_export.SUM_DATA_STAGE_COL).
         if ws_sum.freeze_panes != "F2":
             failures.append(f"4: Sum Data should freeze header row + first 5 columns (F2), got {ws_sum.freeze_panes}")
+        # NO totals row anymore (Rey's TIO_Changes.xlsx "Sum Data" tab
+        # change request #3) -- exactly one row per (Index, Stage), no +1.
         expected_sum_data_row_count = len(excel_reader.expand_sum_data_rows(display2.sum_data))
-        if ws_sum.max_row - 1 != expected_sum_data_row_count + 1:
+        if ws_sum.max_row - 1 != expected_sum_data_row_count:
             failures.append(
-                f"4: Sum Data sheet should have one row per (Index, Stage) + 1 totals row "
-                f"({ws_sum.max_row - 1} vs {expected_sum_data_row_count + 1})"
+                f"4: Sum Data sheet should have exactly one row per (Index, Stage), no totals row "
+                f"({ws_sum.max_row - 1} vs {expected_sum_data_row_count})"
             )
-        if "% Complete" not in [c.value for c in ws_sum[1]]:
-            failures.append("4: Sum Data sheet should have a % Complete column")
+        # Open/Done/Total/% Complete are gone entirely (change request #2).
+        sum_headers = [c.value for c in ws_sum[1]]
+        if any(h in sum_headers for h in ("Open", "Done", "Total", "% Complete")):
+            failures.append(f"4: Sum Data sheet should have NO Open/Done/Total/% Complete columns at all, got {sum_headers}")
 
         ws_report = wb_out["Report"]
         if not ws_report["A1"].font.bold:
@@ -265,11 +269,15 @@ def _run(failures):
         # Sum Data's Description column is at its own SUM_DATA_DESCRIPTION_COL
         # position (not All Data's DESCRIPTION_COL) -- both sheets now have
         # a single header row, so both start their data at row 2.
-        for sheet_name, ws, description_col, first_data_row in (
-            ("All Data", ws_all, excel_export.DESCRIPTION_COL, 2),
-            ("Sum Data", ws_sum, excel_export.SUM_DATA_DESCRIPTION_COL, 2),
+        for sheet_name, ws, description_col, first_data_row, last_data_row in (
+            # All Data still ends with a totals row (blank Description,
+            # no wrap needed) -- excluded via max_row (exclusive). Sum
+            # Data has NO totals row anymore, so its last row IS a real
+            # data row and must be checked too (max_row + 1, inclusive).
+            ("All Data", ws_all, excel_export.DESCRIPTION_COL, 2, ws_all.max_row),
+            ("Sum Data", ws_sum, excel_export.SUM_DATA_DESCRIPTION_COL, 2, ws_sum.max_row + 1),
         ):
-            for r in range(first_data_row, ws.max_row):  # excludes the bottom totals row (blank Description, no wrap needed)
+            for r in range(first_data_row, last_data_row):
                 cell = ws.cell(row=r, column=description_col)
                 if not cell.alignment.wrap_text:
                     failures.append(

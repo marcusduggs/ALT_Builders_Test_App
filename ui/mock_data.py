@@ -26,6 +26,16 @@ from core import combined_export, excel_reader, increment_matcher, status_tracke
 from core.increment_matcher import MatchResult
 from core.project_store import ProjectStore, VersionRecord
 
+def _resolve_display_name(record: Any) -> str:
+    """record.display_name (a user-set label, see
+    core.project_store.IncrementRecord.display_name) if one was ever
+    set, else the derived short name -- the one place this fallback
+    rule is encoded, so every Increment() constructed below (and
+    nowhere else) needs to know about it.
+    """
+    return record.display_name or excel_reader.derive_short_display_name(record.name)
+
+
 # ----------------------------------------------------------------------
 # UI-facing view models
 # ----------------------------------------------------------------------
@@ -79,12 +89,10 @@ class Increment:
     comments: list[dict] = field(default_factory=list)
     # All Data's bottom totals row (see core.excel_reader.all_data_totals)
     # -- {"Stage 1": ..., ..., "Stage 42": ..., "VCR": ..., "SUM": ...}.
-    # Safe to compute once and cache here, unlike Sum Data's totals:
-    # these are plain numeric column sums that never depend on
-    # status.json, so they can't go stale the way a precomputed Sum Data
-    # total could. Sum Data's totals row is instead recomputed fresh from
-    # this Increment's live sum_data every time it's rendered/exported --
-    # see core.excel_reader.live_sum_data_totals.
+    # Safe to compute once and cache here: these are plain numeric
+    # column sums that never depend on status.json. (Sum Data has no
+    # totals row of its own at all anymore -- see Rey's TIO_Changes.xlsx
+    # "Sum Data" tab change request #3.)
     all_data_totals: dict = field(default_factory=dict)
     # {stage_number: real_name} from A-Project Info's Stage No. -> Stage
     # Name lookup (core.excel_reader.parse_project_info) -- e.g. {1:
@@ -114,6 +122,18 @@ class Increment:
     # sheet (cell I12, next to Facility Name) but previously discarded after
     # parsing. Static per version, safe to compute once, same as stage_names.
     project_number: Any = None
+    # Resolved display label for this increment -- core.project_store.
+    # IncrementRecord.display_name (a user-typed name set once at upload
+    # time, see ui.dialogs.display_name_dialog) if one was ever set,
+    # else core.excel_reader.derive_short_display_name(name) as the
+    # fallback -- resolved ONCE here, at construction time, specifically
+    # so every display surface (Sum Data's "Project Name / Increment #"
+    # column, the Increments list, page titles, exports, filter options)
+    # reads this one field and never needs to know the fallback rule
+    # exists. Always a real, non-empty string -- never blank, never
+    # None. Display-only: identity/matching still always uses `name`
+    # (the real Record Name) unchanged.
+    display_name: str = ""
 
     @property
     def needs_status_row_count(self) -> int:
@@ -168,7 +188,6 @@ class CombinedView:
     all_data_rows: list[dict]
     all_data_totals: dict
     sum_data_rows: list[dict]
-    sum_data_totals: dict
     report_rows: list[dict]
     revision_log_rows: list[dict]
     update_history_rows: list[dict]
@@ -193,13 +212,6 @@ def build_combined_view(increments: list[Increment]) -> CombinedView:
         all_data_rows=combined_export.build_combined_all_data_rows(increments),
         all_data_totals=combined_export.combine_all_data_totals(increments, stage_count),
         sum_data_rows=sum_data_rows,
-        # Sums each increment's OWN already-computed live_sum_data_totals()
-        # result (same as each increment's own Subtotal row) rather than
-        # recomputing from sum_data_rows -- that list is flattened per
-        # (index, stage), with no single "is this item Done" concept to
-        # recompute an overall total from directly. See
-        # core.combined_export.combine_sum_data_totals.
-        sum_data_totals=combined_export.combine_sum_data_totals(increments),
         report_rows=combined_export.build_combined_report_rows(increments),
         comments_rows=combined_export.build_combined_comments_rows(increments),
         **combined_export.build_combined_changes_data(increments),
@@ -410,7 +422,7 @@ class MockDataStore:
         if record is None:
             return None
         increments = [
-            Increment(name=i.name, version=i.version, last_updated=i.last_updated)
+            Increment(name=i.name, version=i.version, last_updated=i.last_updated, display_name=_resolve_display_name(i))
             for i in self.store.list_increments(name)
         ]
         return Project(
@@ -493,7 +505,70 @@ class MockDataStore:
         if seeded.carried_over:
             self.store.save_status(project_name, increment_name, seeded.carried_over)
 
-        return Increment(name=record.name, version=record.version, last_updated=record.last_updated)
+        return Increment(
+            name=record.name, version=record.version, last_updated=record.last_updated,
+            display_name=_resolve_display_name(record),
+        )
+
+    def prepare_new_increment(self, project_name: str, file_path: str) -> dict:
+        """Phase 1 of the "editable name before upload" flow (see
+        ui.dialogs.display_name_dialog / ui.pages.home_page) -- does the
+        real, multi-second parsing (get_record_name + normalize_workbook,
+        exactly what add_new_increment() itself does) and returns
+        everything finalize_new_increment() below needs to actually save
+        it, WITHOUT writing anything to disk yet. Callers on the UI
+        thread should run this via ui.workers.run_with_progress, same as
+        add_new_increment() -- the only difference is this version lets
+        the caller show a confirmation/rename dialog in between parsing
+        and actually saving, instead of saving immediately.
+
+        Raises whatever get_record_name() raises if the file has no
+        readable Record Name, same as add_new_increment().
+        """
+        record_name = excel_reader.get_record_name(file_path)
+        parsed = excel_reader.normalize_workbook(file_path)
+        return {
+            "project_name": project_name,
+            "file_path": file_path,
+            "record_name": record_name,
+            "derived_display_name": excel_reader.derive_short_display_name(record_name),
+            "parsed": parsed,
+        }
+
+    def finalize_new_increment(self, prepared: dict, display_name: str | None) -> Increment:
+        """Phase 2: the actual save, using `prepared` from
+        prepare_new_increment() above (never re-parses the file) --
+        fast, local JSON/file-copy writes only, safe to call directly on
+        the UI thread. `display_name` is whatever the user confirmed or
+        edited in the dialog shown between phase 1 and this call (None
+        or blank falls back to prepared["derived_display_name"] -- see
+        core.project_store._sanitize_display_name(), which applies that
+        same fallback again on its own, so either an empty string or
+        None reaches the same result here).
+        """
+        project_name = prepared["project_name"]
+        file_path = prepared["file_path"]
+        record_name = prepared["record_name"]
+        parsed = prepared["parsed"]
+
+        record = self.store.create_increment(
+            project_name, record_name, file_path,
+            project_number=parsed["project_info"]["project_number"],
+            display_name=display_name,
+        )
+
+        required_stages = excel_reader.required_stages_by_index(parsed["records"])
+        empty_carry = status_tracker.CarryForwardResult(needs_status=dict(required_stages))
+        seeded = status_tracker.apply_file_derived_seed(
+            empty_carry, parsed["fill_status"], parsed["raw_status"]
+        )
+        if seeded.carried_over:
+            self.store.save_status(project_name, record_name, seeded.carried_over)
+
+        return Increment(
+            name=record.name, version=record.version, last_updated=record.last_updated,
+            display_name=_resolve_display_name(record),
+        )
 
     def simulate_comparison(self, project_name: str, increment_name: str, file_path: str) -> ComparisonResult:
         """Compares file_path against the increment's current stored
@@ -649,7 +724,10 @@ class MockDataStore:
                 "value_changed_items": result.value_changed_items,
             },
         )
-        return Increment(name=record.name, version=record.version, last_updated=record.last_updated)
+        return Increment(
+            name=record.name, version=record.version, last_updated=record.last_updated,
+            display_name=_resolve_display_name(record),
+        )
 
     # ------------------------------------------------------------------
     # data view
@@ -792,6 +870,7 @@ class MockDataStore:
             stage_names=parsed["project_info"]["stage_names"],
             stage_count=parsed["stage_count"],
             project_number=parsed["project_info"]["project_number"],
+            display_name=_resolve_display_name(record),
         )
 
     def set_stage_status(self, project_name: str, increment_name: str, index: str, stage: int, status: str) -> None:

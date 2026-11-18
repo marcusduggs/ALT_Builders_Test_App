@@ -25,7 +25,11 @@ Layout:
                                          ever renamed (see _migrate_legacy_data_dir)
           increments/
             <increment-slug>/
-              increment.json            {name, version, last_updated}
+              increment.json            {name, version, last_updated, display_name}
+                                         -- display_name is optional (None/absent for
+                                         any increment created before this field
+                                         existed, or left blank at upload time); see
+                                         IncrementRecord.display_name
               status.json               {index: {stage_number: "Done"|"Open"}}
                                          e.g. {"B-C1": {"5": "Done", "12": "Open"}}
                                          -- JSON object keys are always strings, so
@@ -168,6 +172,17 @@ class IncrementRecord:
     version: int
     last_updated: str
     slug: str
+    # A user-editable display label, set once at upload time (see
+    # _sanitize_display_name() and ProjectStore.create_increment()) --
+    # None for every increment created before this field existed, or
+    # for one where the user left the "Project Name / Increment #"
+    # field blank at upload (both fall back to
+    # core.excel_reader.derive_short_display_name(name) wherever this
+    # is actually shown -- see ui.mock_data.Increment.display_name).
+    # NEVER fed into _slugify_increment() or anything else that touches
+    # the on-disk folder slug -- purely a display label, carried
+    # forward unchanged on every version bump (see save_new_version()).
+    display_name: str | None = None
 
 
 @dataclass
@@ -179,6 +194,35 @@ class VersionRecord:
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
     return slug or "untitled"
+
+
+# Characters illegal in a Windows filename, plus control characters --
+# deliberately conservative (a user-typed display label has no reason
+# to need any of these) rather than an exhaustive "what Excel/openpyxl
+# will actually accept" check. This exists purely so a display_name
+# stays safe if it's ever used to SUGGEST a filename somewhere (e.g. an
+# export's default save-as name) -- it is NEVER passed to
+# _slugify_increment() or anything else that computes the on-disk
+# folder slug, so it has no bearing on the Windows MAX_PATH budget
+# logic there either way; this is a separate, purely cosmetic safety
+# net, not a second identity concern.
+_DISPLAY_NAME_ILLEGAL_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+DISPLAY_NAME_MAX_LENGTH = 40
+
+
+def _sanitize_display_name(value: str | None) -> str | None:
+    """Trims whitespace, collapses internal whitespace runs, strips
+    filename-illegal/control characters, and caps length at
+    DISPLAY_NAME_MAX_LENGTH. Returns None (not "") for a blank/
+    whitespace-only input, matching "the user left it blank -> fall
+    back to the derived name" (see IncrementRecord.display_name).
+    """
+    if value is None:
+        return None
+    cleaned = _DISPLAY_NAME_ILLEGAL_CHARS.sub("", value)
+    cleaned = " ".join(cleaned.split())  # trim + collapse internal whitespace
+    cleaned = cleaned[:DISPLAY_NAME_MAX_LENGTH].rstrip()
+    return cleaned or None
 
 
 # Increment directory names are derived from core.excel_reader.get_record_name()'s
@@ -547,6 +591,7 @@ class ProjectStore:
                         version=data["version"],
                         last_updated=data["last_updated"],
                         slug=increment_dir.name,
+                        display_name=data.get("display_name"),
                     )
                 )
             except (json.JSONDecodeError, KeyError, OSError) as exc:
@@ -569,7 +614,12 @@ class ProjectStore:
         return next((i for i in self.list_increments(project_name) if i.name == increment_name), None)
 
     def create_increment(
-        self, project_name: str, increment_name: str, source_file_path: str, project_number: Any = None
+        self,
+        project_name: str,
+        increment_name: str,
+        source_file_path: str,
+        project_number: Any = None,
+        display_name: str | None = None,
     ) -> IncrementRecord:
         """Creates a brand-new increment and saves source_file_path as its
         version 1, with an empty status.json (nothing has ever been marked
@@ -583,6 +633,15 @@ class ProjectStore:
         on-disk slug if increment_name's own slug is too long to use as-is
         -- see _slugify_increment(). Passing None here never changes
         behavior for any increment_name short enough not to need it.
+
+        display_name is a separate, purely cosmetic label (see
+        _sanitize_display_name() and IncrementRecord.display_name's own
+        docstring) -- sanitized here, the one place every caller's
+        display_name ends up written, so there's a single source of
+        truth for what's actually allowed in it. NEVER used to compute
+        `slug` above -- increment_name/project_number (the real,
+        immutable identity) already fully determine it before this
+        parameter is even looked at.
         """
         project = self.get_project(project_name)
         if project is None:
@@ -593,6 +652,7 @@ class ProjectStore:
         taken = {d.name for d in self._increment_dirs(project.slug)}
         max_slug_length = self._increment_slug_max_length(project.slug)
         slug = _unique_slug(_slugify_increment(increment_name, project_number, max_slug_length), taken)
+        display_name = _sanitize_display_name(display_name)
         today = date.today().isoformat()
 
         # If any of these three writes fails partway through (most
@@ -611,7 +671,7 @@ class ProjectStore:
         try:
             _write_json(
                 self._increment_json_path(project.slug, slug),
-                {"name": increment_name, "version": 1, "last_updated": today},
+                {"name": increment_name, "version": 1, "last_updated": today, "display_name": display_name},
             )
             _write_json(self._status_json_path(project.slug, slug), {})
             self._copy_version_file(project.slug, slug, source_file_path, version=1, as_of=today)
@@ -619,7 +679,7 @@ class ProjectStore:
             shutil.rmtree(increment_dir, ignore_errors=True)
             raise
 
-        return IncrementRecord(name=increment_name, version=1, last_updated=today, slug=slug)
+        return IncrementRecord(name=increment_name, version=1, last_updated=today, slug=slug, display_name=display_name)
 
     def save_new_version(self, project_name: str, increment_name: str, source_file_path: str) -> IncrementRecord:
         """Copies source_file_path in as the next version and bumps the
@@ -637,10 +697,18 @@ class ProjectStore:
         today = date.today().isoformat()
         _write_json(
             self._increment_json_path(project.slug, increment.slug),
-            {"name": increment_name, "version": new_version, "last_updated": today},
+            # display_name is carried forward from the CURRENT record,
+            # not re-derived or dropped -- a user-set label must survive
+            # every future version bump, the same way status.json's
+            # Done/Open marks already do (see
+            # core.status_tracker.carry_forward_status).
+            {"name": increment_name, "version": new_version, "last_updated": today, "display_name": increment.display_name},
         )
         self._copy_version_file(project.slug, increment.slug, source_file_path, version=new_version, as_of=today)
-        return IncrementRecord(name=increment_name, version=new_version, last_updated=today, slug=increment.slug)
+        return IncrementRecord(
+            name=increment_name, version=new_version, last_updated=today, slug=increment.slug,
+            display_name=increment.display_name,
+        )
 
     def delete_increment(self, project_name: str, increment_name: str) -> None:
         """Soft-delete: moves the increment's whole folder -- every

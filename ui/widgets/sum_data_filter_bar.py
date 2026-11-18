@@ -31,102 +31,36 @@ module never calls any source-model mutator. Increment.sum_data and
 status.json are therefore unreachable from here by construction, not
 just by convention.
 
-*** Totals/Subtotal rows: follow the filter, with the Totals row
-pinned visible and relabeled when they do ***
-A Subtotal row is shown only if at least one of its own increment's
-data rows passes the active filter(s); the overall Totals row is NEVER
-hidden (even when literally nothing matches, so its own "0 of 0" can
-still be read, rather than vanishing along with every real row). When
-ANY filter is active, both kinds of summary row recompute Open/Done/
-Total/% Complete from only their OWN scope's CURRENTLY VISIBLE rows --
-a Subtotal's scope is its one increment's real rows; the Totals row's
-scope is every real row across every increment. With no filter active,
-both show exactly the precomputed full-dataset values, byte-for-byte
-unchanged from before any filtering existed. The Totals row's own
-label gains a "(filtered)" suffix whenever a filter is active, so the
-number is never mistaken for the unfiltered total at a glance; a
-Subtotal row's own label is left alone (its NUMBERS moving is the
-signal there, and relabeling a row that might not even be visible
-added no value here).
-
-This supersedes an earlier design (ship with "always full dataset,
-clearly labeled" instead) that this project's own author decided
-against after live use -- recorded here as settled product behavior,
-not as a remaining open question.
-
-*** Filtering never touches the underlying data ***
-QSortFilterProxyModel is a read-only VIEW transformation over its
-source model -- it can only hide/show/reorder rows, and override what
-data() REPORTS, as seen through the proxy; it has no mechanism to
-write back to the source model, and this module never calls any
-source-model mutator. The recalculated Totals/Subtotal figures
-described above are computed fresh on every read inside data(), from
-the source model's own already-rendered Status text -- never written
-anywhere, including back into the source model itself. Increment.
-sum_data and status.json are therefore unreachable from here by
-construction, not just by convention.
+*** Summary-row recalculation removed ***
+Sum Data no longer has Subtotal or Totals rows at all (Rey's own
+TIO_Changes.xlsx "Sum Data" tab change request #3: "Remove Subtotals,
+and Total" -- Sum Data is now a flat list of data rows only, in both
+the in-app view and the export). This module used to carry a
+SUMMARY_ROW_ROLE-aware QSortFilterProxyModel subclass that recomputed a
+summary row's Open/Done/Total/% Complete from its scope's currently-
+visible rows -- entirely moot now that there is no summary row (and no
+Open/Done/Total/% Complete columns at all -- change request #2). What
+remains is exactly the plain per-column exact-match filtering every
+row (summary or otherwise) always needed underneath that logic.
 """
 
 from __future__ import annotations
-
-from typing import Any, Callable
 
 from PySide6.QtCore import QModelIndex, QSortFilterProxyModel, Qt, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QComboBox, QGridLayout, QLabel, QVBoxLayout, QWidget
 
-# Custom item-data roles, all set on column 1 ("Increment"/"Inc #"
-# position in every Sum Data table this app builds) of a summary
-# (Totals or Subtotal) row. Callers must set all three together, via
-# mark_summary_row(), BEFORE wrapping the source model in
-# SummaryAwareFilterProxyModel.
-SUMMARY_ROW_ROLE = Qt.UserRole + 100
-# True only for the one overall Totals row (never for a per-increment
-# Subtotal row) -- distinguishes "never hidden, gets the '(filtered)'
-# label suffix" from "hidden when its own scope has zero visible rows,
-# label never changes".
-SUMMARY_IS_TOTALS_ROLE = Qt.UserRole + 101
-# list[int] of source row numbers this summary row aggregates -- every
-# real data row belonging to one increment, for a Subtotal row; every
-# real data row in the whole table, for the Totals row.
-SUMMARY_SCOPE_ROWS_ROLE = Qt.UserRole + 102
-
 ALL_VALUES_LABEL = "All"
 
-# Column positions shared by every Sum Data table this module serves
-# (DataViewPage and CombinedDataViewPage both use this exact layout --
-# see core.excel_export.SUM_DATA_HEADERS, which both preview tables
-# mirror) -- used only to recompute a summary row's own numbers from
-# its scope rows' Status text, not for the ordinary per-column filter
-# matching above (which works on whatever columns the caller offers a
-# filter for).
-_STATUS_COLUMN = 6
-_OPEN_COLUMN = 9
-_DONE_COLUMN = 10
-_TOTAL_COLUMN = 11
-_PCT_COLUMN = 12
 
-
-class SummaryAwareFilterProxyModel(QSortFilterProxyModel):
-    """Hides a data row unless every active per-column filter matches
-    it (AND across columns, exact text match per column). A Subtotal
-    row (SUMMARY_ROW_ROLE, SUMMARY_IS_TOTALS_ROLE False) is hidden when
-    NONE of its own SUMMARY_SCOPE_ROWS_ROLE rows pass that same check;
-    the Totals row (SUMMARY_IS_TOTALS_ROLE True) is never hidden.
-
-    data() is also overridden: whenever a filter is active, a summary
-    row's Open/Done/Total/% Complete columns (and the Totals row's own
-    label) are recomputed from only its scope's currently-visible rows
-    instead of passing through the source model's precomputed,
-    full-dataset value -- see the module docstring for the exact rule
-    and why. See that same docstring for why this can never mutate the
-    source model (or anything else) to do so.
+class SumDataFilterProxyModel(QSortFilterProxyModel):
+    """Hides a data row unless every active per-column filter matches it
+    (AND across columns, exact text match per column).
     """
 
-    def __init__(self, format_pct: Callable[[int, int], str], parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self._filters: dict[int, str] = {}
-        self._format_pct = format_pct
 
     def set_filters(self, filters: dict[int, str]) -> None:
         self._filters = dict(filters)
@@ -141,71 +75,19 @@ class SummaryAwareFilterProxyModel(QSortFilterProxyModel):
         return True
 
     def filterAcceptsRow(self, source_row: int, source_parent) -> bool:
-        model = self.sourceModel()
-        if model is None:
+        if self.sourceModel() is None:
             return True
-        marker_index = model.index(source_row, 1, source_parent)
-        if model.data(marker_index, SUMMARY_ROW_ROLE):
-            if model.data(marker_index, SUMMARY_IS_TOTALS_ROLE):
-                return True
-            if not self._filters:
-                return True
-            scope = model.data(marker_index, SUMMARY_SCOPE_ROWS_ROLE) or []
-            return any(self._row_matches_filters(r, source_parent) for r in scope)
         return self._row_matches_filters(source_row, source_parent)
-
-    def _visible_scope_counts(self, scope: list[int]) -> tuple[int, int]:
-        model = self.sourceModel()
-        open_count = done_count = 0
-        for row in scope:
-            if not self._row_matches_filters(row):
-                continue
-            status = model.data(model.index(row, _STATUS_COLUMN))
-            if status == "Done":
-                done_count += 1
-            elif status == "Open":
-                open_count += 1
-        return open_count, done_count
-
-    def data(self, index, role: int = Qt.DisplayRole):
-        if role != Qt.DisplayRole or not self._filters:
-            return super().data(index, role)
-        model = self.sourceModel()
-        source_index = self.mapToSource(index)
-        row, column = source_index.row(), source_index.column()
-        marker_index = model.index(row, 1)
-        if not model.data(marker_index, SUMMARY_ROW_ROLE):
-            return super().data(index, role)
-        if column not in (1, _OPEN_COLUMN, _DONE_COLUMN, _TOTAL_COLUMN, _PCT_COLUMN):
-            return super().data(index, role)
-
-        is_totals = bool(model.data(marker_index, SUMMARY_IS_TOTALS_ROLE))
-        if column == 1:
-            base_label = super().data(index, role)
-            return f"{base_label} (filtered)" if is_totals else base_label
-
-        scope = model.data(marker_index, SUMMARY_SCOPE_ROWS_ROLE) or []
-        open_count, done_count = self._visible_scope_counts(scope)
-        total = open_count + done_count
-        if column == _OPEN_COLUMN:
-            return str(open_count)
-        if column == _DONE_COLUMN:
-            return str(done_count)
-        if column == _TOTAL_COLUMN:
-            return str(total)
-        return self._format_pct(done_count, total)
 
 
 def _distinct_column_values(model, column: int) -> list[str]:
     """Every distinct non-blank value a column has across the FULL
-    (unfiltered) dataset, excluding summary rows -- computed once when
-    the filter bar is built, not re-narrowed as other filters change
-    (simpler and more predictable than Excel's own cascading dropdowns).
+    (unfiltered) dataset -- computed once when the filter bar is built,
+    not re-narrowed as other filters change (simpler and more
+    predictable than Excel's own cascading dropdowns).
     """
     values: set[str] = set()
     for row in range(model.rowCount()):
-        if model.data(model.index(row, 1), SUMMARY_ROW_ROLE):
-            continue
         text = model.data(model.index(row, column), Qt.DisplayRole)
         if text:
             values.add(str(text))
@@ -327,39 +209,17 @@ def _widen_popup_to_fit(combo: QComboBox, items: list[str]) -> None:
     combo.view().setMinimumWidth(metrics.horizontalAdvance(widest) + 40)
 
 
-def mark_summary_row(model, row: int, scope_rows: list[int], is_totals: bool) -> None:
-    """Marks `row` (0-indexed) of `model` as a Totals/Subtotal summary
-    row, for SummaryAwareFilterProxyModel: `scope_rows` is every real
-    (non-summary) row this one aggregates -- one increment's own rows
-    for a Subtotal, every real row in the table for the Totals row
-    (`is_totals=True`, which also exempts it from ever being hidden and
-    gives it the "(filtered)" label suffix once a filter is active).
-    Also excluded from _distinct_column_values()'s filter-option lists.
-    """
-    marker_index = model.index(row, 1)
-    model.setData(marker_index, True, SUMMARY_ROW_ROLE)
-    model.setData(marker_index, is_totals, SUMMARY_IS_TOTALS_ROLE)
-    model.setData(marker_index, list(scope_rows), SUMMARY_SCOPE_ROWS_ROLE)
-
-
 def apply_filtering(
     table,
     model,
     filter_columns: list[tuple[int, str]],
     status_label: QLabel,
-    format_pct: Callable[[int, int], str],
-) -> tuple[SumDataFilterBar, SummaryAwareFilterProxyModel]:
-    """Wires a fresh SumDataFilterBar + SummaryAwareFilterProxyModel
-    onto `table` (a FrozenTableView already built against the plain
-    `model`), and keeps `status_label` updated with a "Showing X of Y
-    rows" / "no filter active" readout. Returns both so the caller can
-    add the filter bar to its own layout above the table.
-
-    `format_pct(done, total)` must be the SAME % Complete formatter
-    (zero-total guard included) the caller's own static Totals/Subtotal
-    rows already use -- passed in rather than reimplemented here so the
-    filtered and unfiltered numbers can never drift to a different
-    rounding/zero-division convention from each other.
+) -> tuple[SumDataFilterBar, SumDataFilterProxyModel]:
+    """Wires a fresh SumDataFilterBar + SumDataFilterProxyModel onto
+    `table` (a FrozenTableView already built against the plain `model`),
+    and keeps `status_label` updated with a "Showing X of Y rows" / "no
+    filter active" readout. Returns both so the caller can add the
+    filter bar to its own layout above the table.
 
     Built fresh every time the Sum Data tab is (re)built -- which
     DataViewPage already does on every increment/version switch AND
@@ -369,22 +229,18 @@ def apply_filtering(
     filter from a previous increment/version/tab visit can never carry
     over into a freshly rebuilt table.
     """
-    proxy = SummaryAwareFilterProxyModel(format_pct)
+    proxy = SumDataFilterProxyModel()
     proxy.setSourceModel(model)
     table.setModel(proxy)
 
     filter_bar = SumDataFilterBar(model, filter_columns)
 
-    total_data_rows = sum(
-        1 for row in range(model.rowCount()) if not model.data(model.index(row, 1), SUMMARY_ROW_ROLE)
-    )
+    total_data_rows = model.rowCount()
 
     def _refresh():
         proxy.set_filters(filter_bar.current_filters())
         visible_data_rows = sum(
-            1
-            for row in range(model.rowCount())
-            if not model.data(model.index(row, 1), SUMMARY_ROW_ROLE) and proxy.filterAcceptsRow(row, QModelIndex())
+            1 for row in range(model.rowCount()) if proxy.filterAcceptsRow(row, QModelIndex())
         )
         if filter_bar.has_active_filters():
             status_label.setText(f"Filter active — showing {visible_data_rows} of {total_data_rows} rows")

@@ -124,10 +124,10 @@ from PySide6.QtWidgets import (
 )
 
 from core import excel_export
-from core.excel_reader import derive_short_display_name, expand_sum_data_rows, live_sum_data_totals
+from core.excel_reader import expand_sum_data_rows
 from ui.mock_data import Increment, MockDataStore
 from ui.widgets.frozen_table import FrozenTableView
-from ui.widgets.sum_data_filter_bar import apply_filtering, mark_summary_row
+from ui.widgets.sum_data_filter_bar import apply_filtering
 from ui.workers import run_with_progress, show_storage_error
 
 # Sum Data filter bar: which columns get a filter dropdown, and their
@@ -140,16 +140,16 @@ from ui.workers import run_with_progress, show_storage_error
 # mechanically, but adds no real filtering value and would just be a
 # confusing empty-looking dropdown.
 SUM_DATA_FILTER_COLUMNS = [
-    (0, "Project #"), (1, "Increment"), (2, "Index"), (4, "Approval Agency"), (5, "Stage #"), (6, "Status"),
+    (0, "Project #"), (1, "Project Name / Increment #"), (2, "Index"), (4, "Approval Agency"), (5, "Stage #"), (6, "Status"),
 ]
 # DataViewPage shows only one increment at a time, so every row shares
-# the SAME Project #/Increment value -- a filter on either would only
-# ever offer "All" plus a single real choice that matches every row
-# anyway, no real filtering use. CombinedDataViewPage (multiple
-# increments at once) keeps the full SUM_DATA_FILTER_COLUMNS, where
-# both are genuinely useful.
+# the SAME Project #/Project Name / Increment # value -- a filter on
+# either would only ever offer "All" plus a single real choice that
+# matches every row anyway, no real filtering use. CombinedDataViewPage
+# (multiple increments at once) keeps the full SUM_DATA_FILTER_COLUMNS,
+# where both are genuinely useful.
 SINGLE_INCREMENT_SUM_DATA_FILTER_COLUMNS = [
-    (column, label) for column, label in SUM_DATA_FILTER_COLUMNS if label not in ("Project #", "Increment")
+    (column, label) for column, label in SUM_DATA_FILTER_COLUMNS if label not in ("Project #", "Project Name / Increment #")
 ]
 
 
@@ -250,12 +250,6 @@ def _format_total(value) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value)
-
-
-def _format_pct(done: int, total: int) -> str:
-    if total == 0:
-        return "—"
-    return f"{round(100 * done / total)}%"
 
 
 def _format_changes_date(value) -> str:
@@ -478,16 +472,21 @@ class DataViewPage(QWidget):
         back_button.setObjectName("secondaryButton")
         back_button.clicked.connect(lambda: self.on_back())
 
-        # Short display name, not the full Record Name: real HMR/SMR
+        # Increment.display_name, not the full Record Name: real HMR/SMR
         # client files can have a Record Name running 300-550+
         # characters (confirmed, see core.excel_reader.
         # derive_short_display_name's docstring) -- the full text would
-        # overflow this title bar entirely. Identity/matching is
-        # untouched (still core.increment_matcher against the full
-        # self.increment.name); this is display-only, so the full name
-        # is kept as a tooltip for anyone who needs to see it verbatim.
-        short_name = derive_short_display_name(self.increment.name)
-        self.title_label = _ElidingLabel(f"{short_name} — Version {self.increment.version}")
+        # overflow this title bar entirely. display_name is either a
+        # custom name the user set before upload (see
+        # ui.dialogs.display_name_dialog) or that same derived short
+        # name as a fallback -- resolved once, at Increment-construction
+        # time (ui.mock_data), so every display surface (this title,
+        # the Sum Data table, exports, filter options) shows the exact
+        # same text. Identity/matching is untouched (still
+        # core.increment_matcher against the full self.increment.name);
+        # this is display-only, so the full name is kept as a tooltip
+        # for anyone who needs to see it verbatim.
+        self.title_label = _ElidingLabel(f"{self.increment.display_name} — Version {self.increment.version}")
         self.title_label.setObjectName("pageTitle")
         self.title_label.setToolTip(self.increment.name)
 
@@ -834,27 +833,24 @@ class DataViewPage(QWidget):
         self.sum_data_layout.addWidget(self._build_sum_data_table())
 
     def _build_sum_data_table(self) -> QWidget:
-        # "Increment", not "Inc #" -- this column was always meant to
-        # identify WHICH increment a row belongs to (a text label, never
-        # a literal number), matching ui.pages.combined_data_view_page's
-        # own "Increment" column naming for the same concept. Renamed
-        # here (on-screen only) for clarity now that its content is a
-        # short derived label rather than the raw Record Name -- the
-        # exported .xlsx keeps its existing "Inc #" header/full-text
-        # content unchanged (core.excel_export.SUM_DATA_HEADERS).
+        # "Project Name / Increment #", matching Rey's own TIO_Changes.xlsx
+        # "Sum Data" tab header exactly (change request #1 -- he typed
+        # "Incrament", corrected to "Increment" here) -- used identically
+        # on screen and in the export now (no more on-screen "Increment"/
+        # export "Inc #" split). Values are still the short derived name
+        # (or a custom one, see Increment.display_name).
         headers = [
-            "Project #", "Increment", "Index", "Description", "Approval Agency",
-            "Stage #", "Status", "Notes", "Completion Date", "Open", "Done", "Total", "% Complete",
+            "Project #", "Project Name / Increment #", "Index", "Description", "Approval Agency",
+            "Stage #", "Status", "Notes", "Completion Date",
         ]
 
         entries = expand_sum_data_rows(self.increment.sum_data)
-        model = QStandardItemModel(len(entries) + 1, len(headers))  # +1 for the totals row
+        model = QStandardItemModel(len(entries), len(headers))
         model.setHorizontalHeaderLabels(headers)
-        short_increment_name = derive_short_display_name(self.increment.name)
 
         for row_idx, entry in enumerate(entries):
             project_item = QStandardItem(str(self.increment.project_number or ""))
-            inc_item = QStandardItem(short_increment_name)
+            inc_item = QStandardItem(self.increment.display_name)
             inc_item.setToolTip(self.increment.name)
             index_item = QStandardItem(str(entry["index"]))
             description_item = QStandardItem(entry.get("description") or "")
@@ -881,27 +877,11 @@ class DataViewPage(QWidget):
             # the client -- see core.excel_export.SUM_DATA_NOTES_COL).
             items = [project_item, inc_item, index_item, description_item, agency_item, stage_item, status_item]
             items += [QStandardItem(""), QStandardItem("")]  # Notes, Completion Date
-            items += [QStandardItem(""), QStandardItem(""), QStandardItem(""), QStandardItem("")]
-            for item in items[9:]:
-                item.setTextAlignment(Qt.AlignCenter)
 
             for item in items:
                 item.setEditable(False)
             for col_idx, item in enumerate(items):
                 model.setItem(row_idx, col_idx, item)
-
-        totals = live_sum_data_totals(self.increment.sum_data, self.increment.stage_count)
-        totals_items = [
-            _totals_item(""), _totals_item("Totals"), _totals_item(""), _totals_item(""), _totals_item(""),
-            _totals_item(""), _totals_item(""), _totals_item(""), _totals_item(""),
-            _totals_item(str(totals["open_total"])),
-            _totals_item(str(totals["done_total"])),
-            _totals_item(str(totals["grand_total"])),
-            _totals_item(_format_pct(totals["done_total"], totals["grand_total"])),
-        ]
-        for col_idx, item in enumerate(totals_items):
-            model.setItem(len(entries), col_idx, item)
-        mark_summary_row(model, len(entries), scope_rows=list(range(len(entries))), is_totals=True)
 
         table = FrozenTableView(frozen_columns=SUM_DATA_FROZEN_COLUMNS)
         table.setModel(model)
@@ -922,17 +902,6 @@ class DataViewPage(QWidget):
         # measured against an unstyled default font/no padding and
         # clipped "Completion Date" to "ompletion Date" on screen.
         table.setColumnWidth(8, 160)  # Completion Date
-        table.setColumnWidth(9, 56)  # Open
-        table.setColumnWidth(10, 56)  # Done
-        table.setColumnWidth(11, 56)  # Total
-        # 100, not 80: QHeaderView.sectionSizeHint() -- Qt's own
-        # authoritative size for this header, accounting for the real
-        # loaded stylesheet/padding, not a guessed value -- reports 94
-        # as the real minimum; 80 clipped "% Complete" at the right
-        # edge. See tests/test_sum_data_column_widths.py, which checks
-        # every column against this same API so a future header
-        # relabel/font change can't silently reintroduce this.
-        table.setColumnWidth(12, 100)  # % Complete
         table.horizontalHeader().setMinimumSectionSize(40)
         # Notes (not a frozen column, and the one column where extra
         # width is actually useful -- free text the client types into)
@@ -951,12 +920,9 @@ class DataViewPage(QWidget):
         status_label = QLabel()
         status_label.setObjectName("hint")
         filter_bar, self._sum_data_filter_proxy = apply_filtering(
-            table, model, SINGLE_INCREMENT_SUM_DATA_FILTER_COLUMNS, status_label, _format_pct
+            table, model, SINGLE_INCREMENT_SUM_DATA_FILTER_COLUMNS, status_label
         )
         self.sum_data_filter_bar = filter_bar
-
-        totals_caption = QLabel("Totals row recalculates from visible rows when a filter is active.")
-        totals_caption.setObjectName("hint")
 
         container = QWidget()
         container_layout = QVBoxLayout(container)
@@ -964,7 +930,6 @@ class DataViewPage(QWidget):
         container_layout.setSpacing(4)
         container_layout.addWidget(filter_bar)
         container_layout.addWidget(status_label)
-        container_layout.addWidget(totals_caption)
         container_layout.addWidget(table, stretch=1)
         return container
 

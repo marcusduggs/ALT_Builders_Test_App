@@ -39,9 +39,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtCore import QThreadPool
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from core import project_store as project_store_module
+from ui.dialogs.display_name_dialog import DisplayNameDialog
 from core.project_store import ProjectStore
 from ui.mock_data import MockDataStore
 from ui.pages.home_page import HomePage
@@ -146,8 +147,17 @@ def main():
         page = HomePage(ui_store, on_view_data=lambda *a: None, on_view_combined=lambda *a: None)
 
         captured = []
+        # _upload_as_new_increment() now shows a DisplayNameDialog
+        # between the real parse and the actual save (Rey's
+        # TIO_Changes.xlsx "Sum Data" tab change request #4) -- mocked
+        # here to auto-accept the derived name, same as a user clicking
+        # OK without changing anything, so this test can still reach
+        # the real save step (where the simulated OSError below fires)
+        # without a real modal dialog blocking on exec().
         with mock.patch.object(QMessageBox, "critical", staticmethod(lambda *a, **kw: captured.append(("critical", a)))), \
              mock.patch.object(QMessageBox, "warning", staticmethod(lambda *a, **kw: captured.append(("warning", a)))), \
+             mock.patch.object(DisplayNameDialog, "exec", lambda self: QDialog.Accepted), \
+             mock.patch.object(DisplayNameDialog, "value", lambda self: ""), \
              mock.patch("shutil.copy2", side_effect=OSError(2, "No such file or directory", "...increment.json.tmp")):
 
             page._upload_as_new_increment(PROJECT_NAME, GOOD_FIXTURE)
