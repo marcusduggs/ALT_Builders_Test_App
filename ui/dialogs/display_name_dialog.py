@@ -29,8 +29,11 @@ class DisplayNameDialog(QDialog):
     def __init__(self, record_name: str, derived_name: str, existing_display_names: list[str], parent=None):
         """record_name: the file's real, full Record Name (shown as
         context, never edited here -- identity is untouched by this
-        dialog). derived_name: core.excel_reader.derive_short_display_name()'s
-        own result, used to pre-fill the field. existing_display_names:
+        dialog). derived_name: ui.mock_data._derive_fallback_display_name()'s
+        result (Rey's own "SMR 3D"/"HMR 10A" code when the Record Name
+        matches that convention, else derive_short_display_name()'s
+        shortened prose name), used to pre-fill the field.
+        existing_display_names:
         every OTHER increment's current display label already in this
         project, used only to show a non-blocking warning on a
         duplicate -- see module docstring on why duplicates are allowed,

@@ -4,22 +4,24 @@ Regression test for Sum Data's "Project Name / Increment #" column
 FIVE surfaces that show it (single-increment on-screen view, combined
 on-screen view, single-increment export, combined export, and the
 combined-view's own filter dropdown) show the EXACT SAME text:
-ui.mock_data.Increment.display_name (a custom name set at upload, or
-core.excel_reader.derive_short_display_name()'s result as the
-fallback) -- never increment.name (the full, sometimes 300-550+
-character raw Record Name).
+ui.mock_data.Increment.display_name -- a custom name set at upload,
+else Rey's own short code (core.excel_reader.derive_increment_code(),
+e.g. "SMR 3D"/"HMR 10A" -- see test_derive_increment_code.py's own
+oracle test against Rey's TIO_Changes.xlsx), else
+derive_short_display_name()'s shortened-prose fallback for an
+increment outside that naming convention -- never increment.name (the
+full, sometimes 300-550+ character raw Record Name).
 
-Also confirms the on-screen column width fits the common case: measured
-directly (QFontMetrics against the real loaded stylesheet) that
-derive_short_display_name()'s own output can legitimately run up to
-~100 characters, not just a short nickname -- 220px (this column's
-width before this test's own follow-up fix) didn't even fit SMR 3D's
-own 44-character derived name (283px needed). Widened to 300px, which
-covers 11 of the 14 real HMR/SMR fixtures' own derived names; the
-remaining few genuine outliers (up to 589px) still elide with "…" and
-recover via this column's own full-name tooltip -- confirmed directly,
-not assumed, the same accepted pattern Description/Approval Agency
-already rely on.
+Also confirms the on-screen column width still fits: measured directly
+(QFontMetrics against the real loaded stylesheet) that every real
+HMR/SMR fixture's own CODE is tiny (well under 100px) now that
+derive_increment_code() is the common case, but display_name can still
+fall back to a longer name (a user-typed custom name up to 40
+characters, or derive_short_display_name()'s prose fallback for a
+non-HMR/SMR increment -- confirmed: inc8_real_2stage.xlsm's own
+fallback needs 322px) -- that one real outlier still elides with "…"
+and recovers via this column's own full-name tooltip, the same
+accepted pattern Description/Approval Agency already rely on.
 
 Run directly: `python tests/test_sum_data_display_name_column.py`
 """

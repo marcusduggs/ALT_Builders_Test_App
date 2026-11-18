@@ -913,6 +913,55 @@ def derive_short_display_name(record_name: str) -> str:
     return f"{truncated}…"
 
 
+# derive_increment_code()'s own pattern -- matches either the already-
+# abbreviated form some Record Names use directly ("SMR 3D Permanent
+# Power...", "UCSF NHPH - SMR 4B Interim Power") or the spelled-out form
+# ("UCSF NHPH Hospital Make Ready 9B - ...", "Site Make Ready 2C,
+# Utility Disconnects"). Case-insensitive; whichever form appears
+# EARLIEST in the text wins, since a few real names mention a second,
+# unrelated "Hospital"/"Site" phrase later on (e.g. HMR 9B's own Record
+# Name also contains "Long Hospital Shear Wall" further in) that must
+# not be mistaken for the project's own label.
+_INCREMENT_CODE_PATTERN = re.compile(
+    r"(?:(SMR|HMR)|(Site|Hospital)\s+Make\s+Ready)\s*(\d+[A-Za-z]*)",
+    re.IGNORECASE,
+)
+
+
+def derive_increment_code(record_name: str) -> str | None:
+    """Rey's own short code for an increment ("SMR 3D", "HMR 10A", ...)
+    -- distinct from, and NOT a replacement for, derive_short_display_name()
+    above: Rey's TIO_Changes.xlsx "Sum Data" tab column B uses these
+    literal "<SMR|HMR> <number><letter?>" codes, not a shortened prose
+    name. Confirmed against TIO_Changes.xlsx directly for 13 of the 14
+    real HMR/SMR fixtures (tests/fixtures/hmr_smr_projects) -- the
+    pattern is read from the Record Name itself, never hand-mapped per
+    file, so it stays correct if more fixtures are added.
+
+    Returns None when the Record Name doesn't contain a recognizable
+    "Hospital/Site Make Ready <n>" or "HMR|SMR <n>" fragment at all (an
+    increment outside this HMR/SMR naming convention entirely, e.g.
+    "INC 8 - Steel Truss System...") -- callers fall back to
+    derive_short_display_name() in that case. Does NOT hand-correct a
+    Record Name that spells out the "wrong" word for what Rey calls it
+    (confirmed: project H250355-38-00's own Record Name says "Hospital
+    Make Ready 17", producing "HMR 17", while Rey's own TIO_Changes.xlsx
+    labels that same Project # "SMR 17" -- a genuine discrepancy in the
+    source file itself, not something this function should silently
+    paper over by guessing).
+
+    Never used for identity/matching/slugs -- see
+    derive_short_display_name()'s own docstring; the same rule applies
+    here.
+    """
+    match = _INCREMENT_CODE_PATTERN.search((record_name or "").strip())
+    if not match:
+        return None
+    abbrev, word, number = match.groups()
+    prefix = abbrev.upper() if abbrev else ("HMR" if word.lower() == "hospital" else "SMR")
+    return f"{prefix} {number.upper()}"
+
+
 def open_workbook(path_or_workbook: Any) -> openpyxl.Workbook:
     """Loads a TIO workbook, or passes one through unchanged if it's
     already loaded.

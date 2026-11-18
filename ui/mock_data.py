@@ -26,14 +26,27 @@ from core import combined_export, excel_reader, increment_matcher, status_tracke
 from core.increment_matcher import MatchResult
 from core.project_store import ProjectStore, VersionRecord
 
+def _derive_fallback_display_name(record_name: str) -> str:
+    """The non-custom half of _resolve_display_name()'s rule, shared
+    with prepare_new_increment() below (which needs the SAME fallback
+    to pre-fill the upload dialog, before any display_name has been
+    chosen yet): Rey's own short code (core.excel_reader.
+    derive_increment_code() -- "SMR 3D", "HMR 10A") when the Record Name
+    follows that convention, else derive_short_display_name() as a
+    final fallback for increments outside the HMR/SMR naming convention
+    entirely.
+    """
+    return excel_reader.derive_increment_code(record_name) or excel_reader.derive_short_display_name(record_name)
+
+
 def _resolve_display_name(record: Any) -> str:
     """record.display_name (a user-set label, see
     core.project_store.IncrementRecord.display_name) if one was ever
-    set, else the derived short name -- the one place this fallback
-    rule is encoded, so every Increment() constructed below (and
-    nowhere else) needs to know about it.
+    set, else _derive_fallback_display_name(record.name) -- the one
+    place this rule is encoded, so every Increment() constructed below
+    (and nowhere else) needs to know about it.
     """
-    return record.display_name or excel_reader.derive_short_display_name(record.name)
+    return record.display_name or _derive_fallback_display_name(record.name)
 
 
 # ----------------------------------------------------------------------
@@ -125,12 +138,15 @@ class Increment:
     # Resolved display label for this increment -- core.project_store.
     # IncrementRecord.display_name (a user-typed name set once at upload
     # time, see ui.dialogs.display_name_dialog) if one was ever set,
-    # else core.excel_reader.derive_short_display_name(name) as the
-    # fallback -- resolved ONCE here, at construction time, specifically
-    # so every display surface (Sum Data's "Project Name / Increment #"
-    # column, the Increments list, page titles, exports, filter options)
-    # reads this one field and never needs to know the fallback rule
-    # exists. Always a real, non-empty string -- never blank, never
+    # else core.excel_reader.derive_increment_code(name) (Rey's own
+    # "SMR 3D"/"HMR 10A" short code) when the Record Name follows that
+    # convention, else core.excel_reader.derive_short_display_name(name)
+    # as a final fallback for increments outside that convention --
+    # resolved ONCE here, at construction time, specifically so every
+    # display surface (Sum Data's "Project Name / Increment #" column,
+    # the Increments list, page titles, exports, filter options) reads
+    # this one field and never needs to know the fallback rule exists.
+    # Always a real, non-empty string -- never blank, never
     # None. Display-only: identity/matching still always uses `name`
     # (the real Record Name) unchanged.
     display_name: str = ""
@@ -531,7 +547,7 @@ class MockDataStore:
             "project_name": project_name,
             "file_path": file_path,
             "record_name": record_name,
-            "derived_display_name": excel_reader.derive_short_display_name(record_name),
+            "derived_display_name": _derive_fallback_display_name(record_name),
             "parsed": parsed,
         }
 

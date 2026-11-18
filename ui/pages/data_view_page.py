@@ -895,22 +895,21 @@ class DataViewPage(QWidget):
         table.setWordWrap(True)
         table.verticalHeader().hide()
         table.setColumnWidth(0, 120)
-        # 300, not 220: this column's value is now ALWAYS
-        # Increment.display_name (same text on screen and in the
-        # export -- see Rey's TIO_Changes.xlsx "Sum Data" tab change
-        # request #1), and display_name's derived-name fallback
-        # (core.excel_reader.derive_short_display_name()) can
-        # legitimately run up to ~100 characters, not just the shorter
-        # "already obviously short" names. Measured directly (QFontMetrics
-        # against this exact table's font) across all 14 real HMR/SMR
-        # fixtures: 11 of 14 derived names fit under 300px; the 3
-        # genuine outliers (up to 589px for HMR 6C's) still elide with
-        # "…" (QTableView's default ElideRight) and recover via this
-        # item's own full-name tooltip -- the same accepted pattern
-        # Description/Approval Agency already rely on, not a new gap
-        # this column introduces. 220 was sized for a narrower sample
-        # and didn't fit even the common case (confirmed: SMR 3D's own
-        # 44-character name alone needs 283px).
+        # 300, not 220: this column's value is Increment.display_name
+        # (same text on screen and in the export -- see Rey's
+        # TIO_Changes.xlsx "Sum Data" tab change request #1). As of the
+        # derive_increment_code() fix, the common case is now Rey's own
+        # tiny "SMR 3D"/"HMR 10A" code (all 13 real HMR/SMR fixtures
+        # measure well under 100px) -- but display_name can still fall
+        # back to derive_short_display_name()'s longer prose name for an
+        # increment outside that naming convention entirely (confirmed:
+        # inc8_real_2stage.xlsm's own fallback needs 322px), or to a
+        # user-typed custom name up to 40 characters. 300px covers
+        # every real case measured except that one 322px outlier, which
+        # still elides with "…" (QTableView's default ElideRight) and
+        # recovers via this item's own full-name tooltip -- the same
+        # accepted pattern Description/Approval Agency already rely on,
+        # not a new gap this column introduces.
         table.setColumnWidth(1, 300)
         table.setColumnWidth(2, 90)
         table.setColumnWidth(3, 320)
