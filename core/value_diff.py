@@ -34,6 +34,7 @@ from core.excel_reader import (
     MILESTONE_SHEET,
     BlueSheetRecord,
     _blank_to_none,
+    assign_row_keys,
     open_workbook,
     parse_grid_sheet,
     parse_milestone_sheet,
@@ -46,7 +47,27 @@ SHEETS_TO_COMPARE = [*GRID_SHEETS, MILESTONE_SHEET]
 ValueChanges = dict[str, dict[str, tuple[Any, Any]]]
 
 
-def _records_by_index(wb, sheet_name: str) -> dict[str, BlueSheetRecord]:
+def _records_by_row_key(wb, sheet_name: str) -> dict[str, BlueSheetRecord]:
+    """Same records this module always parsed, keyed by row key (see
+    core.excel_reader.assign_row_keys()) instead of bare Index.
+
+    *** FIXED: used to be `{r.index: r for r in records if r.index}` ***
+    A plain dict comprehension keyed by Index is last-write-wins for a
+    repeated Index -- confirmed real on F-Cons Verif's Reference Number
+    column (can repeat) and on grid sheets (HMR 10A: 39 duplicate Index
+    values). That silently compared the WRONG physical rows against each
+    other whenever a duplicated Index's old-file and new-file "last
+    occurrence" weren't actually the same row, or hid one occurrence's
+    changes entirely behind another's. Row keys disambiguate each
+    physical occurrence (1st, 2nd, ... in file order) so the Nth old
+    occurrence is paired against the Nth new occurrence instead.
+
+    Scoped to just THIS sheet's own records (not the whole workbook) --
+    matching this module's existing per-sheet SHEETS_TO_COMPARE loop,
+    not core.excel_reader's own whole-workbook scope. For the common
+    case (an Index that appears once in this sheet), the row key is
+    just the bare Index, same as before.
+    """
     ws = wb[sheet_name]
     if sheet_name == MILESTONE_SHEET:
         # stage_count doesn't matter here -- F-Cons Verif records carry
@@ -58,7 +79,8 @@ def _records_by_index(wb, sheet_name: str) -> dict[str, BlueSheetRecord]:
         records = parse_milestone_sheet(ws, stage_count=0)
     else:
         records, _ = parse_grid_sheet(ws)
-    return {r.index: r for r in records if r.index}
+    row_keys = assign_row_keys(records)
+    return {key: rec for rec, key in zip(records, row_keys) if key}
 
 
 def _normalized_eq(old_value: Any, new_value: Any) -> bool:
@@ -78,12 +100,12 @@ def compare_values(old_workbook_path: Any, new_workbook_path: Any) -> ValueChang
 
     changes: ValueChanges = {}
     for sheet_name in SHEETS_TO_COMPARE:
-        old_by_index = _records_by_index(wb_old, sheet_name)
-        new_by_index = _records_by_index(wb_new, sheet_name)
+        old_by_key = _records_by_row_key(wb_old, sheet_name)
+        new_by_key = _records_by_row_key(wb_new, sheet_name)
 
-        for index in sorted(set(old_by_index) & set(new_by_index)):
-            old_rec = old_by_index[index]
-            new_rec = new_by_index[index]
+        for row_key in sorted(set(old_by_key) & set(new_by_key)):
+            old_rec = old_by_key[row_key]
+            new_rec = new_by_key[row_key]
             fields: dict[str, tuple[Any, Any]] = {}
 
             # Union of both records' OWN stage_values keys, not a fixed
@@ -109,7 +131,22 @@ def compare_values(old_workbook_path: Any, new_workbook_path: Any) -> ValueChang
                     fields[label] = (old_v, new_v)
 
             if fields:
-                changes[index] = fields
+                # Reported under the plain display Index (new_rec.index),
+                # not the row key -- the public return shape stays
+                # exactly what it was before row keys existed, since
+                # every caller (ui/mock_data.py's value_changed_items)
+                # shows this key directly to the user. If a duplicated
+                # Index has MULTIPLE physical occurrences that each
+                # changed, their fields are merged here under that one
+                # shared Index key (last-occurrence-wins per FIELD on a
+                # genuine collision) -- a narrow, documented limitation
+                # for an already-rare case (a duplicated Index with
+                # independent per-occurrence edits), not silently wrong
+                # pairing like the old bug; the real fix here is that
+                # OLD and NEW are now compared occurrence-by-occurrence
+                # instead of old's-last-row vs new's-last-row regardless
+                # of which occurrence actually changed.
+                changes.setdefault(new_rec.index, {}).update(fields)
 
     return changes
 

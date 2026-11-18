@@ -52,6 +52,7 @@ def main():
         "required_stages": [1, 2, 3],
         "stage_status": {1: "Done", 2: "Open"},  # 3 has no entry -> defaults to Open
         "vcr": None,
+        "is_milestone": False,
     }
     result = expand_sum_data_rows([row])
     print("Main case (3 required stages, one unset):")
@@ -83,6 +84,7 @@ def main():
         "required_stages": [20, 1, 5],
         "stage_status": {20: "Done", 1: "Done", 5: "Open"},
         "vcr": None,
+        "is_milestone": False,
     }
     unordered_result = expand_sum_data_rows([unordered_row])
     unordered_stages = [e["stage"] for e in unordered_result]
@@ -108,6 +110,7 @@ def main():
             "required_stages": [],
             "stage_status": {},
             "vcr": vcr_value,
+            "is_milestone": True,
         }
         milestone_result = expand_sum_data_rows([milestone_row])
         print(f"\nMilestone item, vcr={vcr_value!r} ({label}): {milestone_result}")
@@ -129,14 +132,17 @@ def main():
         {
             "index": "A-1", "description": "d1", "approval_agency": "AG1",
             "required_stages": [2, 1], "stage_status": {1: "Done", 2: "Done"}, "vcr": None,
+            "is_milestone": False,
         },
         {
             "index": "A-2", "description": "d2", "approval_agency": "AG2",
             "required_stages": [], "stage_status": {}, "vcr": "Open",
+            "is_milestone": True,
         },
         {
             "index": "A-3", "description": "d3", "approval_agency": "AG3",
             "required_stages": [9], "stage_status": {9: "Open"}, "vcr": None,
+            "is_milestone": False,
         },
     ]
     multi_result = expand_sum_data_rows(multi_items)
@@ -154,21 +160,45 @@ def main():
     # fewer (which would silently drop a stage from any aggregate built
     # on this list) ---
     print("\nRow-count-equals-required-stage-count invariant, several shapes:")
+    # required_stages=[] here is_milestone=True -- a real F-Cons Verif
+    # item, the only case where an empty required_stages legitimately
+    # still produces exactly 1 "VCR" row.
     for required in ([1], [1, 2, 3, 4, 5], list(range(1, 21)), []):
         test_row = {
             "index": "X", "description": "d", "approval_agency": "AG",
             "required_stages": required,
             "stage_status": {s: "Done" for s in required},
             "vcr": "Open",  # only consulted when required_stages is empty
+            "is_milestone": not required,
         }
         expanded = expand_sum_data_rows([test_row])
-        expected_count = len(required) if required else 1  # empty -> exactly 1 VCR row
-        print(f"  required_stages={required} -> {len(expanded)} rows (expected {expected_count})")
+        expected_count = len(required) if required else 1  # empty + is_milestone -> exactly 1 VCR row
+        print(f"  required_stages={required} is_milestone={test_row['is_milestone']} -> {len(expanded)} rows (expected {expected_count})")
         if len(expanded) != expected_count:
             failures.append(
                 f"invariant: required_stages={required} should produce exactly {expected_count} row(s), "
                 f"got {len(expanded)}"
             )
+
+    # --- Fix 1, item 2: a GRID row (is_milestone=False) with zero
+    # required stages must produce ZERO rows -- NOT a "VCR" placeholder.
+    # This is the exact bug confirmed on HMR 10A: required_stages_by_index()'s
+    # duplicate-index collapse could make a real grid row's own required
+    # stages come back empty, and the old "required_stages empty ->
+    # milestone" inference wrongly turned it into a fake VCR row. Only
+    # is_milestone=True may ever produce a VCR row now.
+    grid_row_no_stages = {
+        "index": "B-ZERO", "description": "d", "approval_agency": "AG",
+        "required_stages": [], "stage_status": {}, "vcr": None,
+        "is_milestone": False,
+    }
+    grid_no_stages_result = expand_sum_data_rows([grid_row_no_stages])
+    print(f"\nGrid row, zero required stages, is_milestone=False -> {len(grid_no_stages_result)} rows (expected 0)")
+    if grid_no_stages_result:
+        failures.append(
+            f"a grid row (is_milestone=False) with no required stages must produce ZERO rows, not a VCR "
+            f"placeholder -- got {grid_no_stages_result}"
+        )
 
     print("\n" + "=" * 70)
     if failures:

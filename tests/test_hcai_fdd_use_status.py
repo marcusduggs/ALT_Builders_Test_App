@@ -30,9 +30,9 @@ fixture data (tests/fixtures/hmr_smr_projects/), not synthetic data:
    completely unaffected by this fix -- it only touches grid-sheet
    completion status.
 
-Also locks in HMR 10A's current totals (TIO_H240649-38-00 HMR 10A.xlsm)
-as a KNOWN-BUGGY snapshot, not a correctness guarantee -- see
-test_hmr10a_known_duplicate_index_bug_snapshot()'s own docstring.
+Also confirms HMR 10A's (TIO_H240649-38-00 HMR 10A.xlsm) duplicate-index
+required-stages collapse is fixed -- see
+test_hmr10a_duplicate_index_bug_fixed()'s own docstring.
 
 Run directly: `python tests/test_hcai_fdd_use_status.py`
 """
@@ -141,42 +141,55 @@ def test_vcr_milestone_completely_unaffected(failures):
 def test_stage_count_and_sum_data_row_generation_unaffected(failures):
     """Stage-count detection and Sum Data row expansion depend on the
     "Stage N Required" marker (required_stages), never on HCAI/FDD Use
-    -- confirmed unaffected on SMR 4C: stage_count=3, 12 Sum Data rows,
-    17 expanded on-screen (Index, Stage) rows, matching the values
-    confirmed in the prior (blank-row-exclusion) fix's own verification.
+    -- confirmed unaffected on SMR 4C: stage_count=3.
+
+    Sum Data/expanded row counts here are 16/21, NOT the 12/17 this test
+    pinned before a later fix (see F-Cons Verif's blank-reference-number
+    rows, "? rows" fix): SMR 4C's F-Cons Verif sheet has 4 real milestone
+    rows with a real description but a blank Reference Number
+    ("Installation of Temporary Equipment", "Removal of Temporary
+    Equipment", "Substantial Compliance...", "Certificate of
+    Occupancy...") that used to be silently dropped and are now kept
+    (Index "?") -- confirmed directly against the real file's F-Cons
+    Verif sheet, independent of this HCAI/FDD-Use fix, which this test
+    otherwise still confirms unaffected.
     """
     display = _load_display("TIO S251652-38-00 SMR 4C.xlsm", "Row Generation Unaffected Check")
     if display.stage_count != 3:
         failures.append(f"SMR 4C stage_count changed: expected 3, got {display.stage_count}")
-    if len(display.sum_data) != 12:
-        failures.append(f"SMR 4C sum_data row count changed: expected 12, got {len(display.sum_data)}")
+    if len(display.sum_data) != 16:
+        failures.append(f"SMR 4C sum_data row count changed: expected 16, got {len(display.sum_data)}")
     expanded = excel_reader.expand_sum_data_rows(display.sum_data)
-    if len(expanded) != 17:
-        failures.append(f"SMR 4C expand_sum_data_rows() row count changed: expected 17, got {len(expanded)}")
+    if len(expanded) != 21:
+        failures.append(f"SMR 4C expand_sum_data_rows() row count changed: expected 21, got {len(expanded)}")
 
 
-def test_hmr10a_known_duplicate_index_bug_snapshot(failures):
-    """NOT a correctness guarantee -- a snapshot of HMR 10A's CURRENT,
-    KNOWN-BUGGY behavior, so this test starts failing (loudly, not
-    silently) the moment core.excel_reader.required_stages_by_index()'s
-    separate, already-identified last-write-wins duplicate-index bug is
-    fixed in a later round, forcing this expected value to be revisited
-    rather than left asserting a stale number forever.
+def test_hmr10a_duplicate_index_bug_fixed(failures):
+    """FORMERLY a snapshot of HMR 10A's known-buggy behavior (Done=0,
+    Open=49) -- now a correctness guarantee, confirming
+    core.excel_reader.required_stages_by_index()'s last-write-wins
+    duplicate-index collapse (and expand_sum_data_rows()'s matching
+    "empty required_stages -> fake VCR row" symptom) are both fixed.
 
-    HMR 10A has 39 duplicate grid indices (one, B-C13, spans 9 physical
-    rows) -- confirmed during this fix's own verification. Because
-    required_stages_by_index() collapses each duplicate index's required
-    stages to only its LAST physical row's list (and hands that same
-    collapsed list back to every row sharing the index), the live app
-    currently tracks only 49 of the real 130 required grid-stage cells
-    in this file (confirmed via direct raw-cell count vs. live app
-    count during this fix's own verification) -- entirely a pre-existing
-    required_stages_by_index() artifact, unrelated to and unaffected by
-    this HCAI/FDD-Use completion-source fix. All 49 are "Open" today
-    (HMR 10A's real HCAI/FDD Use column is entirely blank in every row
-    that currently makes it through the collapse) -- zero Done.
+    HMR 10A has 39 duplicate grid Index values (one, B-C13, spans 9
+    physical rows) -- confirmed via a direct, app-independent raw-cell
+    scan of the real file (not assumed): 130 real required grid-stage
+    marker cells (X/1) across all 3 grid sheets. Before the fix,
+    required_stages_by_index() collapsed each duplicate index's required
+    stages down to only its LAST physical row's own list and handed that
+    one shared, often-wrong list back to every row sharing the index --
+    only 49 of the real 130 required cells were tracked, and many
+    duplicate rows wrongly showed "VCR" (zero required stages ->
+    mistaken for a milestone item). Now keyed by row key (see
+    assign_row_keys()), each of the 182 physical B-Tests rows / 123
+    C-On-Site rows / 69 D-Off-Site rows gets its OWN correct required-
+    stages list, so all 130 real required cells are now tracked -- zero
+    lost, zero duplicated. All 130 are "Open" (HMR 10A's real HCAI/FDD
+    Use column is entirely blank in every row) -- zero Done, unchanged
+    from before; only the COUNT changed, not which status wins when a
+    cell does resolve.
     """
-    display = _load_display("TIO_H240649-38-00 HMR 10A.xlsm", "HMR 10A Known Bug Snapshot")
+    display = _load_display("TIO_H240649-38-00 HMR 10A.xlsm", "HMR 10A Duplicate-Index Fix Check")
     done = open_count = 0
     for row in display.all_data:
         for stage in row["required_stages"]:
@@ -185,12 +198,32 @@ def test_hmr10a_known_duplicate_index_bug_snapshot(failures):
                 done += 1
             elif status == "Open":
                 open_count += 1
-    if (done, open_count) != (0, 49):
+    if (done, open_count) != (0, 130):
         failures.append(
-            f"HMR 10A grid Done/Open snapshot changed: expected (Done=0, Open=49), got (Done={done}, Open={open_count}). "
-            f"If this changed because required_stages_by_index()'s duplicate-index bug was just fixed, "
-            f"UPDATE this expected value -- do not just silence the failure."
+            f"HMR 10A grid Done/Open: expected (Done=0, Open=130) now that the duplicate-index collapse is "
+            f"fixed, got (Done={done}, Open={open_count})."
         )
+
+    # Belt-and-suspenders: no All Data row for a grid sheet (B-Tests/
+    # C-On-Site/D-Off-Site) may ever show "VCR" as a required stage --
+    # that string only has meaning in Sum Data's expanded (Index, Stage)
+    # rows (expand_sum_data_rows()), never in required_stages itself, so
+    # this also doubles as a basic type-sanity check.
+    for row in display.all_data:
+        if "VCR" in row["required_stages"]:
+            failures.append(f"HMR 10A: grid row {row['index']!r} has 'VCR' in required_stages -- should never happen")
+
+    # The real bug symptom Rey reported: no GRID row may ever show up as
+    # a Sum Data "VCR" row -- only a genuine F-Cons Verif (milestone)
+    # item may. Confirmed directly against the expanded Sum Data rows,
+    # not inferred.
+    expanded = excel_reader.expand_sum_data_rows(display.sum_data)
+    bad_vcr_rows = [
+        e for e in expanded
+        if e["stage"] == "VCR" and not str(e["index"]).startswith(("F-", "?"))
+    ]
+    if bad_vcr_rows:
+        failures.append(f"HMR 10A: {len(bad_vcr_rows)} non-milestone row(s) show as 'VCR' in Sum Data: {bad_vcr_rows}")
 
 
 def test_raw_status_by_index_unit_semantics(failures):
@@ -246,7 +279,7 @@ def main():
         test_multi_required_stage_shares_one_hcai_cell(failures)
         test_vcr_milestone_completely_unaffected(failures)
         test_stage_count_and_sum_data_row_generation_unaffected(failures)
-        test_hmr10a_known_duplicate_index_bug_snapshot(failures)
+        test_hmr10a_duplicate_index_bug_fixed(failures)
     test_raw_status_by_index_unit_semantics(failures)
 
     print("=" * 70)
@@ -260,8 +293,9 @@ def main():
             "RESULT: PASS -- grid-row completion status now correctly comes from HCAI/FDD Use "
             "(not the Stage N Required marker) on real disagreement and agreement cases, the "
             "multi-required-stage/single-HCAI-cell limitation behaves as documented, VCR/milestone "
-            "status and Sum Data row generation are unaffected, and HMR 10A's known "
-            "required_stages_by_index()-bug-affected totals are pinned as a snapshot, not a guarantee."
+            "status and Sum Data row generation are unaffected, and HMR 10A's duplicate-index "
+            "required_stages_by_index() collapse is now fixed (130 of 130 real required cells tracked, "
+            "zero stray grid-row VCR rows)."
         )
 
 

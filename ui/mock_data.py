@@ -370,7 +370,14 @@ def _sum_data_rows(all_data_rows: list[dict], sum_data_df: Any) -> list[dict]:
             continue
         source = all_data_rows[pos]
         pos += 1
-        is_milestone_row = not source["required_stages"]
+        # "is_milestone" comes straight from the source row's own flag
+        # (ultimately rec.source_sheet == MILESTONE_SHEET), NOT from
+        # "required_stages happens to be empty" -- that inference used
+        # to be wrong whenever required_stages_by_index()'s separate
+        # duplicate-index bug collapsed a real grid row's own stages down
+        # to an empty list (see expand_sum_data_rows()'s docstring for
+        # the HMR 10A symptom this caused).
+        is_milestone_row = source["is_milestone"]
         vcr_transform = excel_reader.vcr_marker_status if is_milestone_row else excel_reader.stage_marker_status
         rows.append(
             {
@@ -380,6 +387,7 @@ def _sum_data_rows(all_data_rows: list[dict], sum_data_df: Any) -> list[dict]:
                 "required_stages": source["required_stages"],
                 "stage_status": source["stage_status"],
                 "vcr": vcr_transform(source["vcr"]),
+                "is_milestone": is_milestone_row,
             }
         )
     return rows
@@ -477,7 +485,7 @@ class MockDataStore:
             project_name, increment_name, file_path, project_number=parsed["project_info"]["project_number"]
         )
 
-        required_stages = excel_reader.required_stages_by_index(parsed["all_data"])
+        required_stages = excel_reader.required_stages_by_index(parsed["records"])
         empty_carry = status_tracker.CarryForwardResult(needs_status=dict(required_stages))
         seeded = status_tracker.apply_file_derived_seed(
             empty_carry, parsed["fill_status"], parsed["raw_status"]
@@ -522,7 +530,16 @@ class MockDataStore:
         new_all_data = new_parsed["all_data"]
         old_description_by_index = _description_by_index(old_all_data)
         new_description_by_index = _description_by_index(new_all_data)
-        new_required_stages = excel_reader.required_stages_by_index(new_all_data)
+        new_records = new_parsed["records"]
+        new_required_stages = excel_reader.required_stages_by_index(new_records)
+        # Maps each required-stages/needs-status row KEY back to its own
+        # plain display Index -- needed below because carry.needs_status
+        # is now row-key-keyed (see required_stages_by_index()), while
+        # added_indexes (from core.structure_diff, unaffected by this
+        # fix) is still plain-Index-keyed.
+        new_index_by_row_key = {
+            key: rec.index for rec, key in zip(new_records, excel_reader.assign_row_keys(new_records)) if key
+        }
 
         value_changes = value_diff.compare_values(wb_old, wb_new)
         value_changed_items = [
@@ -566,14 +583,23 @@ class MockDataStore:
         # carry.carried_over (below) and the Data View untouched -- they
         # still reflect the true, complete picture regardless of what's
         # "new" in this particular diff.
+        # Iterates carry.needs_status directly (row-key-keyed) and checks
+        # each entry's OWN display Index against added_indexes -- NOT
+        # "for idx in added_indexes if idx in carry.needs_status", which
+        # would silently miss EVERY physical occurrence of a duplicated
+        # Index (assign_row_keys() suffixes all of them, including the
+        # first -- none of their row keys equal the bare Index
+        # added_indexes contains), even though each one is the exact
+        # same kind of "brand new, needs a mark" item a non-duplicated
+        # row would be.
         needs_status_items = [
             {
-                "index": idx,
-                "description": new_description_by_index.get(idx),
-                "stages": sorted(carry.needs_status[idx]),
+                "index": new_index_by_row_key.get(row_key, row_key),
+                "description": new_description_by_index.get(new_index_by_row_key.get(row_key, row_key)),
+                "stages": sorted(stages),
             }
-            for idx in added_indexes
-            if idx in carry.needs_status
+            for row_key, stages in carry.needs_status.items()
+            if new_index_by_row_key.get(row_key) in added_indexes
         ]
 
         return ComparisonResult(
@@ -679,8 +705,18 @@ class MockDataStore:
         wb_selected = excel_reader.open_workbook(str(selected_path))
         parsed = excel_reader.normalize_workbook(wb_selected)
         all_data_df = parsed["all_data"]
+        records = parsed["records"]
+        # One row key per physical row, in the SAME order as both
+        # `records` and all_data_df.iterrows() (build_all_data() always
+        # emits exactly one DataFrame row per record, in order -- see
+        # its own docstring) -- used below instead of the bare Index so
+        # that two distinct physical rows sharing an Index (confirmed
+        # real on HMR 10A) each get their own required_stages/status
+        # lookup instead of one collapsed/shared entry. See
+        # excel_reader.assign_row_keys()'s docstring.
+        row_keys = excel_reader.assign_row_keys(records)
         status_map = self.store.load_status(project_name, increment_name)
-        required_stages_by_index = excel_reader.required_stages_by_index(all_data_df)
+        required_stages_by_index = excel_reader.required_stages_by_index(records)
 
         recently_added: set[str] = set()
         value_changed: set[str] = set()
@@ -693,18 +729,21 @@ class MockDataStore:
                 value_changed.update(value_diff.compare_values(str(previous_path), wb_selected).keys())
 
         rows = []
-        for _, row in all_data_df.iterrows():
+        for pos, (_, row) in enumerate(all_data_df.iterrows()):
             index = row["Index"]
             if not index:
                 continue  # blank/category rows aren't real items -- same rule Sum Data/Report use
-            required = required_stages_by_index.get(index, [])
-            status_for_index = status_map.get(index, {})
-            stage_status = {stage: status_for_index[stage] for stage in required if stage in status_for_index}
+            row_key = row_keys[pos]
+            required = required_stages_by_index.get(row_key, [])
+            status_for_row = status_map.get(row_key, {})
+            stage_status = {stage: status_for_row[stage] for stage in required if stage in status_for_row}
             needs_status_stages = [stage for stage in required if stage not in stage_status]
 
             rows.append(
                 {
                     "index": index,
+                    "row_key": row_key,
+                    "is_milestone": records[pos].source_sheet == excel_reader.MILESTONE_SHEET,
                     "description": row["Description"],
                     "approval_agency": row["Apprval Agency"],
                     "required_stages": required,
@@ -761,6 +800,18 @@ class MockDataStore:
         "Save" step for the user to remember (see the click handler in
         ui/pages/data_view_page.py). Fast (no workbook parsing involved),
         safe to call directly from the UI thread.
+
+        `index` here means the row's own storage KEY (row_data["row_key"]
+        from get_increment_for_display(), see excel_reader.assign_row_keys())
+        -- equal to the plain display Index for the overwhelming common
+        case (an Index that appears exactly once), which is why this
+        parameter has always been named/passed as a plain index and every
+        existing caller (tests included) keeps working unchanged. For a
+        DUPLICATED Index, every physical occurrence (including the
+        first) gets its own suffixed row_key -- none of them keep the
+        bare Index -- so a caller must always pass row_data["row_key"],
+        never row_data["index"], for a row that might be one of a
+        duplicate set.
         """
         current = self.store.load_status(project_name, increment_name)
         current.setdefault(index, {})[stage] = status

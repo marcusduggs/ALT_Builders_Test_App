@@ -25,12 +25,19 @@ Run directly: `python tests/test_legacy_stage_header.py`
 
 import os
 import sys
+import tempfile
+from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import openpyxl
+import pandas as pd
 
 from core import excel_reader
+from core.project_store import ProjectStore
+from ui.mock_data import MockDataStore
 
 FIXDIR = os.path.join(os.path.dirname(__file__), "fixtures", "hmr_smr_projects")
 # The real file whose complete data loss (296 items) was directly
@@ -67,8 +74,16 @@ def main():
     print(f"  Sum Data rows (previously 0 -- now the real required items): {len(parsed['sum_data'])}")
     if parsed["stage_count"] != 1:
         failures.append(f"1: SMR 2C should detect exactly 1 (legacy, un-numbered) stage, got {parsed['stage_count']}")
-    if len(parsed["all_data"]) != 296:
-        failures.append(f"1: fixture assumption broken -- expected 296 real catalog items, got {len(parsed['all_data'])}")
+    # 298, not the original 296: a later fix stopped silently dropping
+    # F-Cons Verif rows with a real description but a blank Reference
+    # Number (see core.excel_reader.parse_milestone_sheet's "?" index
+    # rule) -- SMR 2C has exactly 2 such real rows ("Clear all plan
+    # review Outstanding Items List (OIL) Items", "Construction Final"),
+    # now correctly included in All Data too (build_all_data() includes
+    # every record unconditionally), independent of this legacy-header
+    # fix.
+    if len(parsed["all_data"]) != 298:
+        failures.append(f"1: fixture assumption broken -- expected 298 real catalog items, got {len(parsed['all_data'])}")
     if len(parsed["sum_data"]) == 0:
         failures.append("1: Sum Data is still empty -- the silent-zero bug has not been fixed for this file")
 
@@ -99,8 +114,66 @@ def main():
     sum_data = parsed["sum_data"]
     statuses = set(sum_data["Stage 1"])
     print(f"  Distinct 'Stage 1' status values recovered for SMR 2C: {statuses}")
-    if not statuses <= {"Done", "Open"}:
-        failures.append(f"3: expected only 'Done'/'Open' status values, got {statuses}")
+    # Grid-row values only: a milestone (F-Cons Verif) row's "Stage 1"
+    # is always genuinely blank (these items track completion via VCR,
+    # not the stage grid -- see required_stages_by_index()'s docstring)
+    # and build_sum_data()'s raw DataFrame coerces that blank to NaN,
+    # not None, once the column also holds a real status string --
+    # confirmed as a pre-existing pandas quirk, not something this
+    # fix/the legacy-header fix introduced: the same {..., nan} shape
+    # already shows up today on SMR 3D 2022 Delta 1's own "Stage 1"
+    # column, which has nothing to do with either fix. SMR 2C just
+    # didn't have ANY milestone rows in Sum Data before a later fix (see
+    # parse_milestone_sheet()'s "?" index rule) recovered its 2 real
+    # blank-Reference-Number ones, so this is the first time SMR 2C's
+    # own column happens to exercise it.
+    #
+    # Tightened, not loosened: every non-blank value must be EXACTLY
+    # "Done"/"Open" (not just "is a string"), every blank must be a
+    # REAL pandas NaN (not just "is a float", which would also accept a
+    # garbage numeric value like 3.5), AND the NaN rows must actually
+    # BE the milestone ones (Index "F-N" or "?") -- not some grid row
+    # that unexpectedly lost its real marker. Checked both directions
+    # so neither case can silently swap with the other.
+    is_milestone_index = lambda idx: str(idx).startswith("F-") or idx == "?"
+    bad_values = [v for v in statuses if v not in ("Done", "Open") and not pd.isna(v)]
+    if bad_values:
+        failures.append(f"3: found a status value that's neither 'Done'/'Open' nor a real NaN: {bad_values}")
+
+    blank_rows = sum_data[sum_data["Stage 1"].isna()]
+    non_milestone_blank = [idx for idx in blank_rows["Index"] if not is_milestone_index(idx)]
+    if non_milestone_blank:
+        failures.append(f"3: a GRID row's 'Stage 1' is blank -- expected only milestone rows to be, got {non_milestone_blank}")
+
+    done_open_rows = sum_data[sum_data["Stage 1"].isin(["Done", "Open"])]
+    milestone_with_real_status = [idx for idx in done_open_rows["Index"] if is_milestone_index(idx)]
+    if milestone_with_real_status:
+        failures.append(f"3: a milestone row has a real 'Stage 1' Done/Open value -- should always be blank, got {milestone_with_real_status}")
+
+    if done_open_rows.empty:
+        failures.append(f"3: expected at least one real 'Done'/'Open' status recovered, got {statuses}")
+
+    # Restored, not just tightened: confirm this raw-DataFrame NaN can
+    # never actually reach the LIVE Sum Data view/export -- the real
+    # path (ui.mock_data.get_increment_for_display -> expand_sum_data_rows)
+    # never reads build_sum_data()'s "Stage 1" column at all for a
+    # milestone row; it only ever emits a single "VCR" row for one,
+    # using the VCR column's own (always-resolved, never-blank)
+    # vcr_marker_status() -- confirmed directly here, not assumed.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MockDataStore(ProjectStore(base_dir=Path(tmp) / "data"))
+        store.add_project("Legacy Header Live Check")
+        inc = store.add_new_increment("Legacy Header Live Check", SMR_2C)
+        display = store.get_increment_for_display("Legacy Header Live Check", inc.name)
+        expanded = excel_reader.expand_sum_data_rows(display.sum_data)
+        milestone_numbered_rows = [e for e in expanded if e["index"] in ("?",) or str(e["index"]).startswith("F-")
+                                    if e["stage"] != "VCR"]
+        if milestone_numbered_rows:
+            failures.append(f"3: a milestone row produced a numbered-stage row in the LIVE expansion (should only ever be 'VCR'): {milestone_numbered_rows}")
+        live_statuses = {e["status"] for e in expanded if e["stage"] == "VCR"}
+        if any(v not in ("Done", "Open", "NA") for v in live_statuses):
+            failures.append(f"3: a live VCR row's status is something other than a resolved Done/Open/NA value: {live_statuses}")
+        print(f"  Live VCR statuses for SMR 2C's recovered milestone rows: {live_statuses} (never blank/NaN)")
 
     # ------------------------------------------------------------
     # 4 -- the NEWER template (already-tracked fixture, 42 real stage

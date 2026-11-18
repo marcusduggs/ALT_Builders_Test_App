@@ -422,6 +422,38 @@ MILESTONE_REF_COL = 4      # D
 MILESTONE_DESC_COL = 6     # F
 MILESTONE_VCR_COL = 22     # V
 MILESTONE_HEADER_LABEL = "reference"
+# Every one of the 14 real fixture files on hand (tests/fixtures/
+# hmr_smr_projects plus inc8_real_2stage.xlsm) has a literal
+# "ABBREVIATIONS:" row in the Reference Number column (col D), always
+# well below the real tracked rows, introducing a legend block ("GEOR -
+# Geotechnical Engineer of Record", "MEOR - ...", "SP. INSP - ...", "CEOR
+# - ...") that -- confirmed by opening the real sheets directly -- has
+# real text in the Description column (col F) and a genuinely blank
+# Reference Number, the EXACT same shape as a real blank-ref milestone
+# row (see parse_milestone_sheet()'s own docstring for why that shape
+# must otherwise be kept, not skipped). Without this boundary, Fix 2
+# (keeping blank-ref/real-description rows instead of dropping them)
+# would wrongly turn this legend into fake tracked "?" items on every
+# single file. Confirmed this marker is 100% consistent (present, same
+# column, always before the legend lines) across all 14 real files, so
+# stopping the scan here is a real structural boundary, not a guess.
+MILESTONE_LEGEND_MARKER = "ABBREVIATION"
+# A Reference Number cell can also hold real, non-numeric text -- not
+# just blank or the legend marker above. Confirmed exhaustively (every
+# non-blank, non-numeric Reference Number cell across all 14 real
+# fixtures was read directly, not sampled) to be exactly two kinds:
+#   - The preparer's own "see note" marker (currently only ever "NOTE"
+#     itself, SMR 4 row 25: "Please reference excel file ...xlsm" --
+#     real text in Description, but explicitly NOT a tracked item,
+#     confirmed by that literal marker plus a yellow highlight fill).
+#     Matched by a case-insensitive "starts with note" check so a
+#     differently-punctuated variant ("Note:", "NOTES") still matches.
+#   - A real alphanumeric sub-reference (HMR 9B rows 13-15: "7a", "7b",
+#     "7c", sub-items of reference 7, sequenced 6,7a,7b,7c,8 in the real
+#     file) -- a genuine identifier, not a blank. These get their own
+#     Index (f"F-{ref}") instead of the generic "?" a truly blank
+#     Reference Number gets.
+MILESTONE_NOTE_MARKER = "note"
 
 # --- A-Project Info fixed cells ---
 PROJECT_INFO_FACILITY_NUM_CELL = "D12"
@@ -626,23 +658,73 @@ def parse_milestone_sheet(ws, stage_count: int) -> list[BlueSheetRecord]:
 
     Already identity-based: every row below the header is checked
     independently, and a row becomes a record because its Reference Number
-    cell (col D) is non-blank -- not because of a computed row range. Rows
-    can be inserted, deleted, or reordered without breaking this. (See
-    module docstring -- the fixture skips 36 stray rows this way, not by
-    copying a contiguous range.)
+    cell (col D) is non-blank, OR (per a direct client correction -- Rey's
+    team found real milestone rows, e.g. SMR 2C's "Clear all plan review
+    Outstanding Items List (OIL) Items" and "Construction Final", silently
+    missing from Sum Data) it has a real Description with no Reference
+    Number at all. The latter get the literal Index "?" -- not a computed
+    row range, so rows can still be inserted, deleted, or reordered
+    without breaking this. (See module docstring -- the fixture skips 36
+    stray rows this way, not by copying a contiguous range.)
+
+    Stops entirely at the first "ABBREVIATIONS:" row (see
+    MILESTONE_LEGEND_MARKER) -- that and everything below it is a legend
+    block, not tracked data, and would otherwise match the same
+    "real description, blank Reference Number" shape the "?" rule above
+    exists to rescue.
+
+    A non-blank Reference Number that ISN'T a real number also needs a
+    decision -- confirmed, by reading every such cell across all 14 real
+    fixtures (not guessed), to be exactly one of two things (see
+    MILESTONE_NOTE_MARKER):
+      - the preparer's own "NOTE" marker (SMR 4 row 25: real Description
+        text, but an explicit "this isn't a tracked item, see note"
+        flag, not a milestone) -- skipped entirely, same as a genuinely
+        blank row.
+      - a real alphanumeric sub-reference (HMR 9B's "7a"/"7b"/"7c",
+        sub-items of reference 7) -- a real identifier, not a blank, so
+        it gets its own Index (f"F-{ref}") instead of being folded into
+        the generic "?" a truly blank Reference Number gets.
     """
     header_row = _find_header_row(ws, MILESTONE_REF_COL, MILESTONE_HEADER_LABEL)
     records = []
     for r in range(header_row + 2, ws.max_row + 1):
         ref = ws.cell(row=r, column=MILESTONE_REF_COL).value
-        if not isinstance(ref, (int, float)) or isinstance(ref, bool):
-            continue
+        if isinstance(ref, str) and ref.strip().upper().startswith(MILESTONE_LEGEND_MARKER):
+            break
+        description = ws.cell(row=r, column=MILESTONE_DESC_COL).value
+
+        if isinstance(ref, str) and ref.strip():
+            if ref.strip().lower().startswith(MILESTONE_NOTE_MARKER):
+                continue  # preparer's own "see note" marker -- not a trackable item
+            index = f"F-{ref.strip()}"
+        elif isinstance(ref, (int, float)) and not isinstance(ref, bool):
+            # NOT int(ref) -- confirmed real, non-integer sub-references
+            # exist (SMR 2D: 1.1, 1.2; SMR 3D: 4.1, 4.2, 4.3, 4.4), and
+            # int() truncation silently collided each of them with
+            # whatever OTHER row happened to share their integer part
+            # (e.g. both 4.1 and 4.2 collapsed into the same "F-4" as a
+            # genuinely different reference "4"). ":g" keeps a whole
+            # number clean ("F-3", not "F-3.0") while preserving a real
+            # fractional reference exactly ("F-4.2"), and rounds away
+            # the float-noise a value like 4.1 can pick up in binary
+            # (4.1000000000000005) -- confirmed every real reference
+            # cell across all 14 fixtures uses number_format "General"
+            # (no custom formatting that could display differently from
+            # this), so reading the raw value is safe, not just
+            # convenient.
+            index = f"F-{ref:g}"
+        else:
+            if is_blank_description(description):
+                continue
+            index = "?"
+
         records.append(
             BlueSheetRecord(
                 source_sheet=ws.title,
                 source_row=r,
-                index=f"F-{int(ref)}",
-                description=ws.cell(row=r, column=MILESTONE_DESC_COL).value,
+                index=index,
+                description=description,
                 approval_agency=None,
                 opaa_info=None,
                 stage_values={stage: None for stage in range(1, stage_count + 1)},
@@ -1169,6 +1251,11 @@ def normalize_workbook(path: Any) -> dict[str, pd.DataFrame]:
         "raw_status": raw_status_by_index(records),
         "all_data_totals": all_data_totals(all_data_df, stage_count),
         "sum_data_totals": sum_data_totals(sum_data_df, stage_count),
+        # The raw per-physical-row records this everything above was
+        # built from -- callers (ui/mock_data.py) need these directly to
+        # compute required_stages_by_index()/row keys at the same
+        # per-physical-row granularity, not the already-built DataFrames.
+        "records": records,
     }
 
 
@@ -1325,6 +1412,17 @@ def expand_sum_data_rows(rows: list[dict]) -> list[dict]:
     Does NOT compute Open/Done/Total aggregates -- see
     live_sum_data_totals() for that, which still operates on the
     original (unexpanded) `rows` list.
+
+    Which branch a row takes is driven by its own explicit "is_milestone"
+    flag -- NOT by "required_stages happens to be empty" (the earlier
+    rule). That inference was wrong: core.excel_reader.
+    required_stages_by_index()'s own separate duplicate-index collapse
+    bug could make a real GRID row's required_stages come back empty
+    (the exact HMR 10A "VCR on B/C/D rows" symptom this was confirmed
+    against), which wrongly turned ordinary grid items into fake "VCR"
+    milestone rows. Only a genuine F-Cons Verif row may ever produce a
+    "VCR" row now; a grid row with no required stages produces NO row at
+    all (nothing to track), not a placeholder.
     """
     expanded: list[dict] = []
     for row in rows:
@@ -1333,77 +1431,158 @@ def expand_sum_data_rows(rows: list[dict]) -> list[dict]:
             "description": row["description"],
             "approval_agency": row["approval_agency"],
         }
-        required = row.get("required_stages", [])
-        if required:
-            stage_status = row.get("stage_status", {})
-            for stage in sorted(required):
-                expanded.append({**base, "stage": stage, "status": stage_status.get(stage, "Open")})
-        else:
+        if row["is_milestone"]:
             expanded.append({**base, "stage": "VCR", "status": stage_marker_status(row.get("vcr"))})
+            continue
+        required = row.get("required_stages", [])
+        if not required:
+            continue  # a grid item with zero required stages has nothing to track -- no row, not "VCR"
+        stage_status = row.get("stage_status", {})
+        for stage in sorted(required):
+            expanded.append({**base, "stage": stage, "status": stage_status.get(stage, "Open")})
     return expanded
 
 
-def required_stages_by_index(all_data: pd.DataFrame) -> dict[str, list[int]]:
-    """Which of the real numbered stages are actually required for each
-    named Index in an All Data DataFrame -- i.e. have a real marker
-    (numeric 1 or "X"/"x"), not blank/0. This is the per-stage
-    granularity core/status_tracker.py's carry_forward_status() operates
-    on: Sum Data's Done/Open status lives at the (Index, Stage) level,
-    not one flag per Index, so only genuinely-required stages should ever
-    need or carry a status.
+def assign_row_keys(records: list[BlueSheetRecord]) -> list[str | None]:
+    """One stable string key per record in `records`, same order,
+    disambiguating PHYSICAL rows that happen to share the same Index/
+    Reference Number text -- confirmed real (not hypothetical) on real
+    client files: HMR 10A has 39 duplicate grid Index values (one,
+    B-C13, spans 9 physical rows), and F-Cons Verif's Reference Number
+    column itself can repeat (e.g. two distinct physical rows both
+    numbered "3", or multiple genuinely blank-reference rows all
+    carrying the "?" index -- see parse_milestone_sheet()).
 
-    Stage count is derived from all_data's OWN "Stage N" columns rather
-    than taking a separate stage_count parameter -- all_data was built
-    by build_all_data(records, inc_label, stage_count) with exactly that
-    many Stage columns (see _all_data_columns()), so this always matches
-    the DataFrame actually passed in, for whichever single increment
-    it's being called on (every real caller passes one increment's own
-    all_data, never a combined/union one -- see ui/mock_data.py).
+    Equal to the record's own Index when that Index appears EXACTLY ONCE
+    among `records` -- the overwhelming common case, confirmed on 13 of
+    14 real fixtures having zero duplicate grid indexes at all -- so a
+    non-duplicated row's key is byte-identical to its Index, and nothing
+    keyed by this (e.g. status.json, which stores whatever key this
+    produces) changes shape for the vast majority of real data.
 
-    F-Cons Verif ("F-N") indexes always come back with an empty list --
-    none of their Stage columns are ever populated (see the module
-    docstring's ALL DATA section: F-Cons Verif tracks completion via a
-    single VCR flag, not the stage grid). Per-stage status tracking is
-    scoped to the grid sheets' Stage columns only; VCR is unaffected and
-    untracked by this function, a deliberate scope boundary carried over
-    from the task this was built for, not an oversight.
+    *** When an Index DOES repeat, EVERY occurrence gets a suffix --
+    including the first one. *** (An earlier draft of this docstring
+    said only the 2nd+ occurrence would; that was wrong, caught during
+    review -- see the "existing data" note below for why this is also
+    the SAFER choice, not just what the code happens to do.) Suffixes
+    are built with U+2063 INVISIBLE SEPARATOR + a 1-based occurrence
+    number, specifically so they can never collide with real Index text
+    a human typed into Excel, and render invisibly if ever accidentally
+    shown. A record with no index (never a real item) gets None.
 
-    Uses pd.isna() rather than an `is None` check: build_all_data() puts
-    a genuine None (not 0) in F-Cons Verif's Stage columns (see that
-    function's docstring), but a pandas DataFrame column holding a mix of
-    None and numeric/string values coerces those Nones to float `NaN`,
-    which compares unequal to everything including itself -- `NaN not in
-    (0, None, "")` is True, so an `in`-based check alone would silently
-    (and wrongly) count every F-Cons Verif stage as required.
+    Existing-data note: if an Index that used to be unique in some
+    OLDER version of this function (or simply wasn't noticed as
+    duplicated before this fix) already has a status.json entry under
+    its bare name, giving the first occurrence that same bare key back
+    would let carry_forward_status() silently reattach that old,
+    already-ambiguous mark to "whichever physical row happens to come
+    first in today's file order" -- which has no real relationship to
+    which occurrence the mark was actually ever about. Suffixing EVERY
+    occurrence instead means a duplicated Index's old entry is cleanly
+    orphaned (shows as "needs status", re-seeds from the file's own raw
+    marker on the next upload) rather than silently misassigned to the
+    wrong row.
+
+    Callers decide the SCOPE of duplicate detection by what they pass in:
+    core.excel_reader itself always passes the full per-workbook records
+    list (matching required_stages_by_index()'s/raw_status_by_index()'s/
+    fill_status_by_index()'s own scope), while core.value_diff calls this
+    per-sheet (matching that module's own existing per-sheet comparison
+    loop) -- there is no single "correct" scope baked into this function
+    itself.
     """
-    stage_count = sum(1 for col in all_data.columns if col.startswith("Stage "))
-    result: dict[str, list[int]] = {}
-    for _, row in all_data.iterrows():
-        index = row["Index"]
-        if not index:
+    counts: dict[str, int] = {}
+    for rec in records:
+        if rec.index:
+            counts[rec.index] = counts.get(rec.index, 0) + 1
+    seen: dict[str, int] = {}
+    keys: list[str | None] = []
+    for rec in records:
+        if not rec.index:
+            keys.append(None)
             continue
-        required = [
-            stage
-            for stage in range(1, stage_count + 1)
-            if not pd.isna(row[f"Stage {stage}"]) and row[f"Stage {stage}"] not in (0, "")
-        ]
-        result[index] = required
+        if counts[rec.index] == 1:
+            keys.append(rec.index)
+        else:
+            seen[rec.index] = seen.get(rec.index, 0) + 1
+            keys.append(f"{rec.index}⁣{seen[rec.index]}")
+    return keys
+
+
+def required_stages_by_index(records: list[BlueSheetRecord]) -> dict[str, list[int]]:
+    """Which of the real numbered stages are actually required for each
+    physical row in `records` -- i.e. have a real marker (numeric 1 or
+    "X"/"x"), not blank/0. This is the per-stage granularity
+    core/status_tracker.py's carry_forward_status() operates on: Sum
+    Data's Done/Open status lives at the (Index, Stage) level, not one
+    flag per Index, so only genuinely-required stages should ever need
+    or carry a status.
+
+    Keyed by assign_row_keys() -- NOT by the record's bare Index -- so
+    that two distinct physical rows sharing the same Index (confirmed
+    real: HMR 10A has 39 such duplicates) each get their OWN, correct
+    required-stages list instead of being collapsed into one shared
+    entry. *** THIS WAS A REAL BUG, CONFIRMED AGAINST A REAL CLIENT FILE
+    ***: the previous version of this function was keyed by plain Index
+    across an entire All Data DataFrame, which is last-write-wins for a
+    repeated Index -- whichever physical row happened to be LAST in file
+    order silently overwrote every earlier occurrence's own required
+    stages. On HMR 10A this collapsed 130 real required-stage cells down
+    to 49 visible ones, and could make a row with real required stages
+    look like it had NONE (feeding the "grid row shows VCR" bug fixed in
+    expand_sum_data_rows() the same round). For the common case -- an
+    Index that appears exactly once, true for every non-HMR-10A fixture
+    checked -- assign_row_keys() returns the bare Index unchanged, so
+    this function's result (and anything keyed by it, including
+    status.json on disk) is byte-identical to before for those rows.
+
+    Operates directly on each record's OWN stage_values dict rather than
+    an All Data DataFrame column -- avoids the pandas NaN-coercion
+    workaround the DataFrame-based version needed (a column mixing grid
+    rows' 0-filled blanks with F-Cons Verif's genuine Nones upcasts to
+    float64, turning those Nones into NaN); a record's stage_values
+    holds the real, un-coerced cell value, so a plain `not in (0, None,
+    "")` check is both correct and simpler. F-Cons Verif rows still
+    always come back with an empty list -- parse_milestone_sheet() seeds
+    every one of their stage_values entries to None (see that function's
+    docstring), so they never contain a real marker -- the same scope
+    boundary as before: VCR is unaffected and untracked by this
+    function, not an oversight.
+    """
+    row_keys = assign_row_keys(records)
+    result: dict[str, list[int]] = {}
+    for rec, key in zip(records, row_keys):
+        if not key:
+            continue
+        result[key] = [stage for stage, value in rec.stage_values.items() if value not in (0, None, "")]
     return result
 
 
 def fill_status_by_index(records: list[BlueSheetRecord]) -> dict[str, dict[int, str]]:
-    """Rey's team's fill-color-derived status ("Done"/"Open"), by Index,
-    for every grid-sheet stage cell where a color signal was found -- see
-    BlueSheetRecord.stage_fill_status and reys_fill_color_convention in
-    project memory. Same VCR/milestone-sheet scope boundary as
-    required_stages_by_index(): F-Cons Verif records never populate
-    stage_fill_status, so they simply don't appear here.
+    """Rey's team's fill-color-derived status ("Done"/"Open"), by row key
+    (see assign_row_keys() -- equal to Index for the common, non-
+    duplicated case), for every grid-sheet stage cell where a color
+    signal was found -- see BlueSheetRecord.stage_fill_status and
+    reys_fill_color_convention in project memory. Same VCR/milestone-
+    sheet scope boundary as required_stages_by_index(): F-Cons Verif
+    records never populate stage_fill_status, so they simply don't
+    appear here.
+
+    Keyed by row key, not bare Index, for the same reason
+    required_stages_by_index() is: two distinct physical rows sharing an
+    Index must never have their fill-color marks merged into one shared
+    dict (the old `result.setdefault(rec.index, {}).update(...)` could
+    silently mix two unrelated rows' colors together on a duplicated
+    Index) -- with row keys, each physical row has a key of its own, so
+    this setdefault/update only ever runs once per key, same as a plain
+    assignment.
     """
+    row_keys = assign_row_keys(records)
     result: dict[str, dict[int, str]] = {}
-    for rec in records:
-        if not rec.index or not rec.stage_fill_status:
+    for rec, key in zip(records, row_keys):
+        if not key or not rec.stage_fill_status:
             continue
-        result.setdefault(rec.index, {}).update(rec.stage_fill_status)
+        result.setdefault(key, {}).update(rec.stage_fill_status)
     return result
 
 
@@ -1441,10 +1620,17 @@ def raw_status_by_index(records: list[BlueSheetRecord]) -> dict[str, dict[int, s
     See core.status_tracker.apply_file_derived_seed, which only uses
     this as a fallback behind fill_status_by_index -- an explicit color
     mark from Rey's team still wins if the two disagree.
+
+    Keyed by assign_row_keys(), not bare Index -- same reasoning as
+    required_stages_by_index(): a duplicated Index's physical rows each
+    need their own entry, not one shared/overwritten one. For a
+    non-duplicated Index (the common case), the row key IS the Index, so
+    this is byte-identical to before.
     """
+    row_keys = assign_row_keys(records)
     result: dict[str, dict[int, str]] = {}
-    for rec in records:
-        if not rec.index:
+    for rec, key in zip(records, row_keys):
+        if not key:
             continue
         hcai_filled = rec.hcai_fdd_use is not None and str(rec.hcai_fdd_use).strip() != ""
         completion_status = "Done" if hcai_filled else "Open"
@@ -1454,5 +1640,5 @@ def raw_status_by_index(records: list[BlueSheetRecord]) -> dict[str, dict[int, s
                 continue  # not a recognized required-stage marker (blank, 0, or e.g. "NA")
             stages[stage] = completion_status
         if stages:
-            result[rec.index] = stages
+            result[key] = stages
     return result

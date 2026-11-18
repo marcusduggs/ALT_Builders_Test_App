@@ -771,7 +771,9 @@ class DataViewPage(QWidget):
         # the screen showing a status change that was never actually
         # persisted to status.json.
         try:
-            self.store.set_stage_status(self.project_name, self.increment.name, row_data["index"], stage, new_status)
+            self.store.set_stage_status(
+                self.project_name, self.increment.name, row_data["row_key"], stage, new_status
+            )
         except OSError as exc:
             show_storage_error(self, exc)
             return
