@@ -14,9 +14,10 @@ This app reads the state's file, reconstructs the reports automatically, and —
 
 - **Reads the state's raw Excel file directly** — no manual data entry. The app reverse-engineers the state's own formulas and structure to normalize the data automatically.
 - **Detects changes between file versions** — new items, removed items, changed values, and structural changes (renamed/missing columns) are all flagged separately, with a review screen shown before anything is saved.
-- **Tracks completion status** per inspection item per stage, independent of what the state's file says, and preserves that progress across future file updates.
-- **Generates four linked reports automatically**: a flat data view, a status/progress summary, a grouped agency report with totals, and a change history log — the same reports the team used to build by hand.
-- **Combines multiple increments into one report**, with per-increment subtotals and one overall grand total.
+- **Tracks completion status** per inspection item per stage. Status is seeded from the state file's own "HCAI/FDD Use" column on upload (not from a stage's "Required" marker), then tracked independently in the app and preserved across future file updates.
+- **Generates four linked reports automatically**: a flat data view, a per-stage status list, a grouped agency report with totals, and a change history log — the same reports the team used to build by hand.
+- **Filters the status report by any of its columns** — in the app, and as real Excel column filters carried into the exported file.
+- **Combines multiple increments into one report**, with per-increment subtotals and one overall grand total on All Data and Report.
 - **Runs as a single Windows executable** — no installation, no dependencies, and the compliance team member can choose where their data is stored.
 
 <!-- TODO: screenshot of the review/diff screen showing added/removed/changed items -->
@@ -27,9 +28,12 @@ This app reads the state's file, reconstructs the reports automatically, and —
 |---|---|
 | Smart file matching | Uploading a file automatically detects whether it's a new increment or an update to an existing one, based on the record name inside the file itself |
 | Change review | Every update shows exactly what's new, removed, or changed — before it's committed |
-| Status tracking | ![Sum Data status](screenshots/sum-data-status.png) Per-stage Done/Open tracking, shown with clear color coding |
+| Status tracking | ![Sum Data status](screenshots/sum-data-status.png) Per-stage Done/Open tracking, seeded from the file's "HCAI/FDD Use" column and shown with clear color coding |
+| Sum Data layout | One row per item and stage, identified by a short project code (e.g. `SMR 3D`) in a "Project Name / Increment #" column — a plain list, with no aggregate Open/Done/Total/% columns or subtotal rows |
+| Column filtering | Filter any Sum Data column in the app; exports carry real Excel AutoFilters |
+| Rename on upload | A new increment's short display name can be reviewed and edited before it's saved, without affecting how files are matched or versioned |
 | Version history | Every uploaded version is kept; you can look back at any prior version at any time |
-| Combined reporting | Select multiple increments and export one combined report with per-increment subtotals |
+| Combined reporting | Select multiple increments and export one combined report, with per-increment subtotals on All Data and Report |
 | Automatic updates | Built-in "Check for Updates" compares against the latest GitHub release |
 | Safe deletion | Deleted projects and increments are recoverable, never immediately erased |
 
@@ -61,7 +65,7 @@ A few things worth calling out for anyone reading the code:
 
 - **The normalization logic was reverse-engineered from the state's own template**, not guessed — the mapping was derived from the actual Excel formulas in a real source file and validated cell-by-cell against known-correct output before anything was built on top of it.
 - **Parsing is identity-based, not position-based** — items are matched by their own index/ID, not by row number, so the app doesn't break if the state adds, removes, or reorders rows in a future file.
-- **17 test modules** cover the core normalization engine, diffing logic, storage layer, and export correctness — including regression tests for real bugs found during development (e.g. `pandas` silently converting blank cells to `NaN`, which then evaluated as truthy in a naive check).
+- **38 test modules** cover the core normalization engine, diffing logic, storage layer, and export correctness — including regression tests for real bugs found during development (e.g. `pandas` silently converting blank cells to `NaN`, which then evaluated as truthy in a naive check), and oracle tests that compare generated output against the client's own reference spreadsheet.
 
 ## Download
 

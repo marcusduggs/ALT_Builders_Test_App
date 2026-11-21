@@ -69,12 +69,16 @@
 <p>Once a file is loaded, you'll see four tabs at the top of the data view:</p>
 <ul>
 <li>All Data — every item from the state's file, laid out in one flat table.</li>
-<li>Sum Data — the same items, one row per required stage, showing its Done or Open status.</li>
+<li>Sum Data — the same items, one row per required stage, showing its Done or Open status. Its columns are Project #, Project Name / Increment #, Index, Description, Approval Agency, Stage #, Status, Notes, and Completion Date.</li>
 <li>Report — a summary, grouped by agency, with a grand total at the bottom.</li>
 <li>Changes — see below.</li>
 </ul>
 <p>These are the same reports you used to build by hand — the app just builds them for you, every time, from whatever file you upload.</p>
 <p>All Data ends with a bold totals row, summarizing every column above it — the same convention your original spreadsheets have used. Sum Data doesn't have a totals row — it's a plain list of items, matching your own reference sheet.</p>
+<h2>Filtering Sum Data</h2>
+<p>Above the Sum Data table there's a row of dropdowns. Looking at a single increment, you get one for Index, Approval Agency, Stage #, and Status. (Project # and Project Name / Increment # are left out here on purpose — every row belongs to the same increment, so filtering on them wouldn't narrow anything down. In View Combined Data, where several increments are shown together, you get those two as well.)</p>
+<p>Pick a value from any dropdown to narrow the table down to just the matching rows; pick more than one to combine them. Each dropdown lists only the values that actually appear in your own data.</p>
+<p>Set a dropdown back to "All" to clear it. Filtering only changes what you're looking at — it never changes your data, and it never affects what gets exported. Switching tabs or increments resets the filters.</p>
 <h1>The Changes Tab</h1>
 <p>This tab has two sections, shown one below the other:</p>
 <h2>State Revision Log</h2>
@@ -90,6 +94,10 @@
 <p>In the All Data tab, each item shows its required stages, marked green (Done) or red (Open). Click directly on a stage to toggle it between the two.</p>
 <p>There's no separate Save button — your click is saved right away.</p>
 <p>The Sum Data tab shows this same status for reference, displayed as the words “Done” or “Open” with the same green or red background — this view is read-only; use All Data to actually change a status.</p>
+<h2>Where the Starting Status Comes From</h2>
+<p>When you upload a file for the first time, the app doesn't start everything at Open — it reads the status already recorded in the file itself, so you're not re-entering work that's already been signed off.</p>
+<p>For ordinary grid items, it uses the file's <b>HCAI/FDD Use</b> column: an item counts as Done when that column is filled in for it. It deliberately does <i>not</i> use the stage's own "Required" marker, which only says that a stage applies to the item — not that it's actually been completed. Milestone (F-Cons Verif) items use their own VCR column instead, which is what that column is for. If your team has colored a cell green or red to mark it deliberately, that color is used in preference to the marker in the cell.</p>
+<table class="tip"><tr><td><b>Good to know</b><br/>This only ever fills in a status that has never been set before. Any Done or Open mark you've made yourself in the app is never overwritten by a later upload — so when an update brings in new items, those new items pick up their starting status from the file, while everything you've already marked stays exactly as you left it.</td></tr></table>
 <h1>Reviewing an Update</h1>
 <p>When Upload File detects that a file is an update to an increment you already have, this is where the app does its most valuable work.</p>
 <h2>The Review Screen</h2>
@@ -114,6 +122,7 @@
 <li>Choose where to save the file and what to name it (the app will suggest a sensible name based on the project and increment).</li>
 <li>The exported file includes all four tabs — All Data, Sum Data, Report, and Changes — formatted and ready to send or print.</li>
 </ol>
+<p>The Sum Data sheet comes out with Excel's own column filter arrows already switched on across every column, so you can sort and filter it in Excel the same way you can in the app. The export always contains every row, whatever you had filtered on screen at the time.</p>
 <h1>Combining Multiple Increments Into One Report</h1>
 <p>If you'd like one report that covers several increments at once (for example, everything from INC 2 and INC 3 together), you can combine them from the increment list.</p>
 <ul>

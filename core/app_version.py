@@ -20,10 +20,16 @@ changelog can never drift apart from EACH OTHER either.
 
 APP_VERSION = "0.0.0-dev"
 
-# Back to the usual cumulative feature list -- v0.12.0's single "no
-# functional changes" line covered only that one test-only release (see
-# git history); this is the next real feature release, so the full
-# history resumes, with everything shipped since v0.11.0 appended.
+# The usual cumulative feature list -- v0.12.0's single "no functional
+# changes" line covered only that one test-only release (see git
+# history); every real feature release since has appended to the full
+# history below, v0.15.0 included.
+#
+# NOTE: this is a cumulative HISTORY, so a later entry can supersede an
+# earlier one (e.g. the "Combined All Data/Sum Data now show a subtotal"
+# entry below predates Sum Data's subtotal/totals rows being removed
+# again at the client's request -- both entries are accurate for the
+# release they describe).
 CHANGELOG_SUMMARY = """\
 - Track progress per stage with Done/Open status
 - Review changes before accepting an updated file, including new items \
@@ -106,4 +112,31 @@ names overflowing their display area
 Windows when the data folder was deeply nested
 - Clearer error message when the data folder can't be written to
 - A leftover folder from a failed upload no longer affects the \
-project list"""
+project list
+- Fixed an item that appears on more than one row (the same reference \
+number listed several times, for different locations or scopes) having \
+only one of those rows' stages tracked -- every row's stages are now \
+tracked separately, and ordinary grid items no longer show a VCR mark, \
+which belongs only to the milestone (F-Cons Verif) items. Confirmed \
+against a real HMR 10A file.
+- Milestone (F-Cons Verif) items that have no reference number filled \
+in are now listed with "?" in place of their Index, instead of being \
+left out of the reports entirely. The app now stops reading that sheet \
+at its ABBREVIATIONS legend, and skips NOTE lines, so neither is \
+mistaken for a real item.
+- Reference numbers that aren't plain whole numbers are now kept as \
+their own separate items instead of being combined into one -- both \
+letter-suffixed numbers (7a, 7b, 7c) and decimal ones (F-1.1, F-4.2)
+- Sum Data now identifies each increment by its short project code in \
+a "Project Name / Increment #" column -- for example "SMR 3D" or \
+"HMR 10A" -- on screen and in every export
+- Sum Data's Open, Done, Total and % Complete columns, along with its \
+Subtotal and Totals rows, have been removed -- it's now a plain list \
+of items and their stage status, matching your own reference sheet
+- When you upload a brand-new increment, you can now review and change \
+the short name it will be listed under, before it's saved
+- Please note: for HMR 10A, and for any other file where the same \
+reference number appears on more than one row, upload the file once as \
+a new version after installing this update. That one re-upload \
+refreshes its stage tracking using the corrected behavior above. Every \
+other file is unaffected and needs no action."""
