@@ -120,10 +120,13 @@ tracked separately, and ordinary grid items no longer show a VCR mark, \
 which belongs only to the milestone (F-Cons Verif) items. Confirmed \
 against a real HMR 10A file.
 - Milestone (F-Cons Verif) items that have no reference number filled \
-in are now listed with "?" in place of their Index, instead of being \
-left out of the reports entirely. The app now stops reading that sheet \
-at its ABBREVIATIONS legend, and skips NOTE lines, so neither is \
-mistaken for a real item.
+in, but DO have at least one discipline sign-off mark, are now listed \
+with "?" in place of their Index, instead of being left out of the \
+reports entirely. A row with no reference number AND no sign-off mark \
+(a per-project boilerplate line, not an actual tracked item) stays \
+hidden, same as before. The app also stops reading that sheet at its \
+ABBREVIATIONS legend, and skips NOTE lines, so neither is mistaken for \
+a real item.
 - Reference numbers that aren't plain whole numbers are now kept as \
 their own separate items instead of being combined into one -- both \
 letter-suffixed numbers (7a, 7b, 7c) and decimal ones (F-1.1, F-4.2)
