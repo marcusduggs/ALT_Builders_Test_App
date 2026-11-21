@@ -143,25 +143,29 @@ def test_stage_count_and_sum_data_row_generation_unaffected(failures):
     "Stage N Required" marker (required_stages), never on HCAI/FDD Use
     -- confirmed unaffected on SMR 4C: stage_count=3.
 
-    Sum Data/expanded row counts here are 16/21, NOT the 12/17 this test
-    pinned before a later fix (see F-Cons Verif's blank-reference-number
-    rows, "? rows" fix): SMR 4C's F-Cons Verif sheet has 4 real milestone
-    rows with a real description but a blank Reference Number
-    ("Installation of Temporary Equipment", "Removal of Temporary
-    Equipment", "Substantial Compliance...", "Certificate of
-    Occupancy...") that used to be silently dropped and are now kept
-    (Index "?") -- confirmed directly against the real file's F-Cons
-    Verif sheet, independent of this HCAI/FDD-Use fix, which this test
+    Sum Data/expanded row counts here are 12/17, NOT the original 12/17
+    this test first pinned, nor the 16/21 a LATER fix (F-Cons Verif's
+    blank-reference-number "? rows" fix) temporarily raised them to:
+    SMR 4C's F-Cons Verif sheet has 4 real milestone rows with a real
+    description but a blank Reference Number ("Installation of
+    Temporary Equipment", "Removal of Temporary Equipment",
+    "Substantial Compliance...", "Certificate of Occupancy...") that
+    fix kept (Index "?") -- but NONE of those 4 rows has a discipline
+    sign-off mark (confirmed directly against the real file), so a
+    STILL LATER discipline-mark refinement (the same rule SMR 2C's
+    "Clear all plan review OIL Items" and SMR 4's 5 boilerplate rows
+    are dropped under) drops all 4 again, landing back at 12/17 --
+    independent of this HCAI/FDD-Use fix either way, which this test
     otherwise still confirms unaffected.
     """
     display = _load_display("TIO S251652-38-00 SMR 4C.xlsm", "Row Generation Unaffected Check")
     if display.stage_count != 3:
         failures.append(f"SMR 4C stage_count changed: expected 3, got {display.stage_count}")
-    if len(display.sum_data) != 16:
-        failures.append(f"SMR 4C sum_data row count changed: expected 16, got {len(display.sum_data)}")
+    if len(display.sum_data) != 12:
+        failures.append(f"SMR 4C sum_data row count changed: expected 12, got {len(display.sum_data)}")
     expanded = excel_reader.expand_sum_data_rows(display.sum_data)
-    if len(expanded) != 21:
-        failures.append(f"SMR 4C expand_sum_data_rows() row count changed: expected 21, got {len(expanded)}")
+    if len(expanded) != 17:
+        failures.append(f"SMR 4C expand_sum_data_rows() row count changed: expected 17, got {len(expanded)}")
 
 
 def test_hmr10a_duplicate_index_bug_fixed(failures):

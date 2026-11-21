@@ -422,6 +422,18 @@ MILESTONE_REF_COL = 4      # D
 MILESTONE_DESC_COL = 6     # F
 MILESTONE_VCR_COL = 22     # V
 MILESTONE_HEADER_LABEL = "reference"
+# The discipline-sign-off columns (G..P) -- GEOR/AOR/SEOR/MEOR/EEOR/
+# CONT/IOR/SP INSP/TEST LAB, plus a 10th column whose own label varies
+# by template vintage (CEOR, SEOR/DEG, or OTHER -- confirmed by reading
+# every one of the 14 real fixtures' own header row directly; still the
+# same kind of discipline sign-off column in every case, just named
+# differently). Used by the blank-Reference-Number rule below (Rey's
+# own correction, via Marcus): a milestone row with NO reference number
+# is only a real tracked item if at least one of THESE columns has an
+# "X" mark -- a row with a real Description but no mark here at all is
+# the same shape as the ABBREVIATIONS legend/blank filler rows and
+# should be excluded the same way, not kept as a fake "?" item.
+MILESTONE_DISCIPLINE_COLS = range(7, 17)
 # Every one of the 14 real fixture files on hand (tests/fixtures/
 # hmr_smr_projects plus inc8_real_2stage.xlsm) has a literal
 # "ABBREVIATIONS:" row in the Reference Number column (col D), always
@@ -659,13 +671,22 @@ def parse_milestone_sheet(ws, stage_count: int) -> list[BlueSheetRecord]:
     Already identity-based: every row below the header is checked
     independently, and a row becomes a record because its Reference Number
     cell (col D) is non-blank, OR (per a direct client correction -- Rey's
-    team found real milestone rows, e.g. SMR 2C's "Clear all plan review
-    Outstanding Items List (OIL) Items" and "Construction Final", silently
-    missing from Sum Data) it has a real Description with no Reference
-    Number at all. The latter get the literal Index "?" -- not a computed
-    row range, so rows can still be inserted, deleted, or reordered
-    without breaking this. (See module docstring -- the fixture skips 36
-    stray rows this way, not by copying a contiguous range.)
+    team found a real milestone row, SMR 2C's "Construction Final",
+    silently missing from Sum Data) it has a real Description with no
+    Reference Number AND at least one "X" mark in one of the discipline
+    sign-off columns (see MILESTONE_DISCIPLINE_COLS) -- the latter get
+    the literal Index "?", Stage # "VCR". Confirmed by reading every
+    blank-Reference row across all 14 real fixtures directly (not
+    guessed): a blank-ref row with a real Description but NO mark in any
+    discipline column -- e.g. SMR 2C's own "Clear all plan review
+    Outstanding Items List (OIL) Items" (the ORIGINAL motivating example
+    for this rule, before this correction) -- is a per-project boilerplate
+    placeholder line, the exact same shape as the legend rows below,
+    and is excluded the same way, per a second, later correction from
+    Rey (via Marcus) once that first fix was shown to also be pulling in
+    unmarked boilerplate rows that were never actually tracked items.
+    Not a computed row range either way, so rows can still be inserted,
+    deleted, or reordered without breaking this.
 
     Stops entirely at the first "ABBREVIATIONS:" row (see
     MILESTONE_LEGEND_MARKER) -- that and everything below it is a legend
@@ -716,6 +737,19 @@ def parse_milestone_sheet(ws, stage_count: int) -> list[BlueSheetRecord]:
             index = f"F-{ref:g}"
         else:
             if is_blank_description(description):
+                continue
+            has_discipline_mark = any(
+                isinstance(ws.cell(row=r, column=c).value, str) and ws.cell(row=r, column=c).value.strip().upper() == "X"
+                for c in MILESTONE_DISCIPLINE_COLS
+            )
+            if not has_discipline_mark:
+                # A real Description with a blank Reference Number and
+                # NO discipline sign-off mark at all -- confirmed (see
+                # this function's own docstring) to be a per-project
+                # boilerplate placeholder line (e.g. "Clear all plan
+                # review Outstanding Items List (OIL) Items", "Removal
+                # of temporary equipment"), never an actually-tracked
+                # item. Excluded the same way a blank description is.
                 continue
             index = "?"
 

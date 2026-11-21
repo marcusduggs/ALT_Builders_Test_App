@@ -74,16 +74,19 @@ def main():
     print(f"  Sum Data rows (previously 0 -- now the real required items): {len(parsed['sum_data'])}")
     if parsed["stage_count"] != 1:
         failures.append(f"1: SMR 2C should detect exactly 1 (legacy, un-numbered) stage, got {parsed['stage_count']}")
-    # 298, not the original 296: a later fix stopped silently dropping
+    # 297, not the original 296: a later fix stopped silently dropping
     # F-Cons Verif rows with a real description but a blank Reference
-    # Number (see core.excel_reader.parse_milestone_sheet's "?" index
-    # rule) -- SMR 2C has exactly 2 such real rows ("Clear all plan
-    # review Outstanding Items List (OIL) Items", "Construction Final"),
-    # now correctly included in All Data too (build_all_data() includes
-    # every record unconditionally), independent of this legacy-header
-    # fix.
-    if len(parsed["all_data"]) != 298:
-        failures.append(f"1: fixture assumption broken -- expected 298 real catalog items, got {len(parsed['all_data'])}")
+    # Number AND at least one discipline sign-off mark (see
+    # core.excel_reader.parse_milestone_sheet's "?" index rule) -- SMR
+    # 2C has exactly 1 such real row ("Construction Final", which has
+    # discipline marks), now correctly included in All Data too
+    # (build_all_data() includes every record unconditionally),
+    # independent of this legacy-header fix. ("Clear all plan review
+    # Outstanding Items List (OIL) Items" has NO discipline marks at
+    # all and is excluded by a later discipline-mark refinement -- it
+    # was briefly included too, at 298, between those two fixes.)
+    if len(parsed["all_data"]) != 297:
+        failures.append(f"1: fixture assumption broken -- expected 297 real catalog items, got {len(parsed['all_data'])}")
     if len(parsed["sum_data"]) == 0:
         failures.append("1: Sum Data is still empty -- the silent-zero bug has not been fixed for this file")
 
