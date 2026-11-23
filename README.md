@@ -31,7 +31,7 @@ This app reads the state's file, reconstructs the reports automatically, and —
 | Status tracking | ![Sum Data status](screenshots/sum-data-status.png) Per-stage Done/Open tracking, seeded from the file's "HCAI/FDD Use" column and shown with clear color coding |
 | Sum Data layout | One row per item and stage, identified by a short project code (e.g. `SMR 3D`) in a "Project Name / Increment #" column — a plain list, with no aggregate Open/Done/Total/% columns or subtotal rows |
 | Column filtering | Filter any Sum Data column in the app; exports carry real Excel AutoFilters |
-| Rename on upload | A new increment's short display name can be reviewed and edited before it's saved, without affecting how files are matched or versioned |
+| Rename anytime | An increment's short display name can be set before its first upload, or changed later from the Increments list or its own data view — never affects how files are matched or versioned |
 | Version history | Every uploaded version is kept; you can look back at any prior version at any time |
 | Combined reporting | Select multiple increments and export one combined report, with per-increment subtotals on All Data and Report |
 | Automatic updates | Built-in "Check for Updates" compares against the latest GitHub release |

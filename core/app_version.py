@@ -23,7 +23,7 @@ APP_VERSION = "0.0.0-dev"
 # The usual cumulative feature list -- v0.12.0's single "no functional
 # changes" line covered only that one test-only release (see git
 # history); every real feature release since has appended to the full
-# history below, v0.15.0 included.
+# history below, v0.15.1 included.
 #
 # NOTE: this is a cumulative HISTORY, so a later entry can supersede an
 # earlier one (e.g. the "Combined All Data/Sum Data now show a subtotal"
