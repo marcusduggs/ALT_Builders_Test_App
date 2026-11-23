@@ -106,6 +106,7 @@ from PySide6.QtCore import QModelIndex, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPixmap, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -125,6 +126,7 @@ from PySide6.QtWidgets import (
 
 from core import excel_export
 from core.excel_reader import expand_sum_data_rows
+from ui.dialogs.display_name_dialog import DisplayNameDialog
 from ui.mock_data import Increment, MockDataStore
 from ui.widgets.frozen_table import FrozenTableView
 from ui.widgets.sum_data_filter_bar import apply_filtering
@@ -498,6 +500,16 @@ class DataViewPage(QWidget):
         title_box.addWidget(self.title_label)
         title_box.addWidget(self.subtitle_label)
 
+        # Right next to the title -- the one place on this page that
+        # actually shows display_name -- rather than buried in a menu
+        # elsewhere, so "rename what you're looking at" has an obvious,
+        # local home. Same rename flow (DisplayNameDialog reused) as the
+        # Home page's own Increments-list "Rename" action; see
+        # _on_rename_increment.
+        rename_button = QPushButton("Rename")
+        rename_button.setObjectName("secondaryButton")
+        rename_button.clicked.connect(self._on_rename_increment)
+
         version_label = QLabel("Version:")
         self.version_combo = QComboBox()
         self.version_combo.setMinimumWidth(150)
@@ -511,12 +523,61 @@ class DataViewPage(QWidget):
         layout.addWidget(back_button)
         layout.addSpacing(16)
         layout.addLayout(title_box)
+        layout.addSpacing(8)
+        layout.addWidget(rename_button)
         layout.addSpacing(16)
         layout.addWidget(version_label)
         layout.addWidget(self.version_combo)
         layout.addStretch(1)
         layout.addWidget(export_button)
         return row
+
+    def _on_rename_increment(self):
+        """Reuses DisplayNameDialog (see its own module docstring's
+        "2. RENAMING" case) -- same dialog, same sanitization/cap/
+        duplicate-warning rule as the Home page's own Increments-list
+        "Rename" action (ui.pages.home_page._on_rename_increment).
+
+        On confirm: updates the in-memory self.increment.display_name
+        directly and re-renders the title bar + Sum Data tab (both the
+        only on-screen surfaces on THIS page that show it) instead of a
+        full get_increment_for_display() reload -- a rename changes no
+        parsed data, so there's nothing else to re-read from the file.
+        Returning to the Home page afterward shows the new name there
+        too: show_home() already refreshes its increment table on every
+        navigation back to it (ui/main_window.py), independent of this.
+        """
+        project = self.store.get_project(self.project_name)
+        if project is None:
+            return
+        existing_display_names = [i.display_name for i in project.increments if i.name != self.increment.name]
+        derived_name = self.store.derive_automatic_display_name(self.increment.name)
+        dialog = DisplayNameDialog(
+            self.increment.name, derived_name, existing_display_names,
+            initial_value=self.increment.display_name,
+            window_title="Rename Increment",
+            intro_text=(
+                "Change the short name shown for this increment on screen, in the Sum Data "
+                "\"Project Name / Increment #\" column, and in exports. This never affects how the app "
+                "matches or versions the file -- that's still based on its own real record name below. "
+                "Clear the field to go back to the automatic name shown as a placeholder."
+            ),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        try:
+            new_display_name = self.store.rename_increment(self.project_name, self.increment.name, dialog.value())
+        except OSError as exc:
+            show_storage_error(self, exc)
+            return
+        if new_display_name is None:
+            return  # the increment vanished from under us (e.g. deleted elsewhere) -- nothing to update
+
+        self.increment.display_name = new_display_name
+        self.title_label.setText(f"{self.increment.display_name} — Version {self.increment.version}")
+        self._refresh_sum_data_tab()
 
     def _populate_version_combo(self):
         """Every stored version of this increment, newest first (see

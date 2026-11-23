@@ -138,6 +138,8 @@ Subtotal and Totals rows, have been removed -- it's now a plain list \
 of items and their stage status, matching your own reference sheet
 - When you upload a brand-new increment, you can now review and change \
 the short name it will be listed under, before it's saved
+- You can now rename an increment at any time after uploading it, using \
+the new Rename option in the Increments list or in its own data view
 - Please note: for HMR 10A, and for any other file where the same \
 reference number appears on more than one row, upload the file once as \
 a new version after installing this update. That one re-upload \

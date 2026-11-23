@@ -580,11 +580,16 @@ class HomePage(QWidget):
             view_button.setObjectName("primaryButton")
             view_button.clicked.connect(partial(self.on_view_data, project_name, increment.name))
 
+            rename_button = QPushButton("Rename")
+            rename_button.setObjectName("secondaryButton")
+            rename_button.clicked.connect(partial(self._on_rename_increment, project_name, increment.name))
+
             delete_button = QPushButton("Delete")
             delete_button.setObjectName("dangerButton")
             delete_button.clicked.connect(partial(self._on_delete_increment, project_name, increment.name))
 
             actions_layout.addWidget(view_button)
+            actions_layout.addWidget(rename_button)
             actions_layout.addWidget(delete_button)
             self.increment_table.setCellWidget(row, 4, actions)
 
@@ -764,6 +769,48 @@ class HomePage(QWidget):
             QMessageBox.critical(self, "Could Not Export", f"This file couldn't be saved:\n\n{exc}")
 
         run_with_progress(self, "Exporting combined report...", do_export, on_finished, on_error)
+
+    def _on_rename_increment(self, project_name: str, increment_name: str):
+        """Reuses DisplayNameDialog (see its own module docstring's
+        "2. RENAMING" case) for an increment that's already on disk --
+        pre-filled with its CURRENT resolved display name, placeholder
+        showing the automatic name, duplicate warning comparing against
+        every OTHER increment in this project (this one excluded by
+        `.name`, not by display_name, since two increments could
+        coincidentally already share a display_name). `increment_name`
+        is the real Record Name (identity) -- never changed by this;
+        only the cosmetic display_name is.
+        """
+        project = self.store.get_project(project_name)
+        if project is None:
+            return
+        increment = next((i for i in project.increments if i.name == increment_name), None)
+        if increment is None:
+            return
+
+        existing_display_names = [i.display_name for i in project.increments if i.name != increment_name]
+        derived_name = self.store.derive_automatic_display_name(increment.name)
+        dialog = DisplayNameDialog(
+            increment.name, derived_name, existing_display_names,
+            initial_value=increment.display_name,
+            window_title="Rename Increment",
+            intro_text=(
+                "Change the short name shown for this increment on screen, in the Sum Data "
+                "\"Project Name / Increment #\" column, and in exports. This never affects how the app "
+                "matches or versions the file -- that's still based on its own real record name below. "
+                "Clear the field to go back to the automatic name shown as a placeholder."
+            ),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        try:
+            self.store.rename_increment(project_name, increment_name, dialog.value())
+        except OSError as exc:
+            show_storage_error(self, exc)
+            return
+        self._refresh_increment_table()
 
     def _on_delete_increment(self, project_name: str, increment_name: str):
         answer = QMessageBox.question(

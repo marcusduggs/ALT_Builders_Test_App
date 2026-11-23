@@ -459,6 +459,39 @@ class MockDataStore:
     def delete_increment(self, project_name: str, increment_name: str) -> None:
         self.store.delete_increment(project_name, increment_name)
 
+    def derive_automatic_display_name(self, record_name: str) -> str:
+        """Public wrapper around _derive_fallback_display_name() -- the
+        same "SMR 3D"/"HMR 10A" code-or-derived-prose value
+        prepare_new_increment() already exposes (as
+        "derived_display_name") to pre-fill the upload dialog, made
+        available here too so a RENAME dialog (shown for an increment
+        that's already on disk, with no `prepared` dict to read it from)
+        can show the exact same automatic-name placeholder without
+        re-parsing the source file.
+        """
+        return _derive_fallback_display_name(record_name)
+
+    def rename_increment(self, project_name: str, increment_name: str, display_name: str | None) -> str | None:
+        """Renames an ALREADY-UPLOADED increment's display label (see
+        core.project_store.ProjectStore.rename_increment_display_name) --
+        never touches identity (`increment_name`, the real Record Name),
+        the folder/slug, status.json, or anything else. A blank/None
+        `display_name` clears it, falling back to the automatic name
+        (derive_automatic_display_name()) wherever this is shown.
+
+        Returns the newly RESOLVED display label (the custom name if one
+        was set, else the automatic one -- the exact text every display
+        surface should now show), so a caller already holding an
+        in-memory Increment can assign it straight to that Increment's
+        own display_name field instead of re-fetching/re-parsing the
+        whole increment just to pick up a label change. Returns None if
+        no such increment exists.
+        """
+        record = self.store.rename_increment_display_name(project_name, increment_name, display_name)
+        if record is None:
+            return None
+        return _resolve_display_name(record)
+
     # ------------------------------------------------------------------
     # increment upload / review flow
     # ------------------------------------------------------------------

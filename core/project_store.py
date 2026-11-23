@@ -710,6 +710,41 @@ class ProjectStore:
             display_name=increment.display_name,
         )
 
+    def rename_increment_display_name(
+        self, project_name: str, increment_name: str, display_name: str | None
+    ) -> IncrementRecord | None:
+        """Updates ONLY display_name in an already-uploaded increment's
+        increment.json -- never the folder/slug, `name` (the real Record
+        Name identity), `version`, or `last_updated`. Sanitized/capped
+        the exact same way create_increment()/save_new_version() already
+        do (see _sanitize_display_name()); a blank/whitespace-only
+        `display_name` clears it back to None, which is exactly "use the
+        automatic name" wherever this is displayed (see
+        ui.mock_data._resolve_display_name()) -- there is no separate
+        "reset" operation, clearing IS resetting.
+
+        Returns the updated IncrementRecord, or None if no such
+        increment exists (a no-op, not an error -- same
+        stale-reference-tolerant convention as update_comment()/
+        delete_comment()).
+        """
+        project = self.get_project(project_name)
+        increment = self.get_increment(project_name, increment_name) if project else None
+        if project is None or increment is None:
+            return None
+        display_name = _sanitize_display_name(display_name)
+        _write_json(
+            self._increment_json_path(project.slug, increment.slug),
+            {
+                "name": increment.name, "version": increment.version,
+                "last_updated": increment.last_updated, "display_name": display_name,
+            },
+        )
+        return IncrementRecord(
+            name=increment.name, version=increment.version, last_updated=increment.last_updated,
+            slug=increment.slug, display_name=display_name,
+        )
+
     def delete_increment(self, project_name: str, increment_name: str) -> None:
         """Soft-delete: moves the increment's whole folder -- every
         version file and status.json, untouched -- out of
